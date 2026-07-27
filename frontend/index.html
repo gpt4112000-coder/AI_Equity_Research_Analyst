@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Equity Research - Small Cap</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
+        .gradient-text { background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .btn { padding: 0.5rem 1rem; border-radius: 8px; cursor: pointer; border: none; font-weight: 500; }
+        .btn-primary { background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: white; }
+        .btn-primary:hover { background: linear-gradient(135deg, #2563eb, #7c3aed); }
+        .btn-secondary { background: #334155; color: #e2e8f0; }
+        .btn-secondary:hover { background: #475569; }
+        .btn-active { background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: white; }
+        .sector-chip { display: inline-block; padding: 0.5rem 1rem; border-radius: 9999px; margin: 0.25rem; cursor: pointer; background: #1e293b; border: 1px solid #334155; color: #94a3b8; }
+        .sector-chip:hover { border-color: #60a5fa; color: white; }
+        .sector-chip.active { background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: white; border-color: transparent; }
+        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+        @media (max-width: 768px) { .grid-4 { grid-template-columns: repeat(2, 1fr); } }
+        .loading { text-align: center; padding: 4rem; color: #64748b; }
+        .empty { text-align: center; padding: 4rem; color: #64748b; }
+        a { color: #60a5fa; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <nav style="border-bottom: 1px solid #334155; padding: 1rem 1.5rem;">
+            <div style="max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between;">
+                <div style="font-size: 1.25rem; font-weight: 700;" class="gradient-text">AI Equity Research - Small Cap</div>
+                <div id="nav-buttons"></div>
+            </div>
+        </nav>
+        <main style="max-width: 1200px; margin: 0 auto; padding: 2rem 1.5rem;" id="content"></main>
+    </div>
+
+    <script>
+    const API = 'http://localhost:8001/api';
+    let currentPage = 'dashboard';
+    let selectedSector = null;
+    let selectedCompany = null;
+
+    async function fetchAPI(endpoint) {
+        const res = await fetch(`${API}${endpoint}`);
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json();
+    }
+
+    async function postAPI(endpoint) {
+        const res = await fetch(`${API}${endpoint}`, { method: 'POST' });
+        return res.json();
+    }
+
+    function renderNav() {
+        const pages = ['dashboard', 'sectors', 'announcements', 'setup'];
+        document.getElementById('nav-buttons').innerHTML = pages.map(p =>
+            `<button class="btn ${currentPage === p ? 'btn-active' : 'btn-secondary'}" onclick="navigate('${p}')" style="margin-left: 0.5rem;">${p.charAt(0).toUpperCase() + p.slice(1)}</button>`
+        ).join('');
+    }
+
+    function navigate(page) {
+        currentPage = page;
+        renderNav();
+        render();
+    }
+
+    function render() {
+        const content = document.getElementById('content');
+        if (currentPage === 'dashboard') renderDashboard(content);
+        else if (currentPage === 'sectors') renderSectors(content);
+        else if (currentPage === 'announcements') renderAnnouncements(content);
+        else if (currentPage === 'setup') renderSetup(content);
+        else if (currentPage === 'company') renderCompany(content);
+    }
+
+    async function renderDashboard(el) {
+        el.innerHTML = '<div class="loading">Loading...</div>';
+        try {
+            const data = await fetchAPI('/dashboard');
+            el.innerHTML = `
+                <div class="fade-in">
+                    <div class="grid-4" style="margin-bottom: 2rem;">
+                        <div class="card"><div style="color: #94a3b8; font-size: 0.875rem;">Companies</div><div style="font-size: 2rem; font-weight: 700;" class="gradient-text">${data.total_companies}</div></div>
+                        <div class="card"><div style="color: #94a3b8; font-size: 0.875rem;">Announcements</div><div style="font-size: 2rem; font-weight: 700;" class="gradient-text">${data.total_announcements}</div></div>
+                        <div class="card"><div style="color: #94a3b8; font-size: 0.875rem;">Sectors</div><div style="font-size: 2rem; font-weight: 700;" class="gradient-text">${Object.keys(data.sector_distribution).length}</div></div>
+                        <div class="card"><div style="color: #94a3b8; font-size: 0.875rem;">Categories</div><div style="font-size: 2rem; font-weight: 700;" class="gradient-text">${Object.keys(data.top_categories).length}</div></div>
+                    </div>
+                    <div class="grid-2">
+                        <div class="card">
+                            <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 1rem;">Sector Distribution</h3>
+                            ${Object.entries(data.sector_distribution).map(([s, c]) => `
+                                <div style="display: flex; align-items: center; margin-bottom: 0.75rem;">
+                                    <span style="width: 140px; font-size: 0.875rem; text-transform: capitalize;">${s.replace('_', ' ')}</span>
+                                    <div style="flex: 1; margin: 0 0.75rem; background: #334155; border-radius: 9999px; height: 8px;">
+                                        <div style="background: #3b82f6; height: 8px; border-radius: 9999px; width: ${(c / data.total_companies) * 100}%;"></div>
+                                    </div>
+                                    <span style="font-size: 0.875rem; color: #94a3b8;">${c}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                        <div class="card">
+                            <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 1rem;">Top Announcement Types</h3>
+                            ${Object.entries(data.top_categories).slice(0, 8).map(([cat, c]) => `
+                                <div style="display: flex; align-items: center; margin-bottom: 0.75rem;">
+                                    <span style="width: 200px; font-size: 0.875rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${cat}</span>
+                                    <div style="flex: 1; margin: 0 0.75rem; background: #334155; border-radius: 9999px; height: 8px;">
+                                        <div style="background: #8b5cf6; height: 8px; border-radius: 9999px; width: ${(c / data.total_announcements) * 100}%;"></div>
+                                    </div>
+                                    <span style="font-size: 0.875rem; color: #94a3b8;">${c}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>
+            `;
+        } catch (e) {
+            el.innerHTML = `<div class="empty">Error: ${e.message}. Make sure backend is running on port 8001.</div>`;
+        }
+    }
+
+    async function renderSectors(el) {
+        el.innerHTML = '<div class="loading">Loading...</div>';
+        try {
+            const data = await fetchAPI('/sectors');
+            el.innerHTML = `
+                <div class="fade-in">
+                    <h2 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 1.5rem;">Sectors (Small Cap / Micro Cap)</h2>
+                    <div style="margin-bottom: 1.5rem;">
+                        ${data.sectors.map(s => `
+                            <span class="sector-chip ${selectedSector === s ? 'active' : ''}" onclick="selectSector('${s}')">${s.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
+                        `).join('')}
+                    </div>
+                    <div id="sector-stocks"></div>
+                </div>
+            `;
+            if (selectedSector) loadSectorStocks();
+        } catch (e) {
+            el.innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+        }
+    }
+
+    async function selectSector(sector) {
+        selectedSector = sector;
+        renderSectors(document.getElementById('content'));
+    }
+
+    async function loadSectorStocks() {
+        const el = document.getElementById('sector-stocks');
+        if (!el) return;
+        el.innerHTML = '<div class="loading">Loading stocks...</div>';
+        try {
+            const data = await fetchAPI(`/sectors/${selectedSector}/stocks`);
+            el.innerHTML = `
+                <div class="card">
+                    <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 1rem; text-transform: capitalize;">${selectedSector.replace('_', ' ')} Stocks</h3>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem;">
+                        ${data.stocks.map(s => `
+                            <div class="card" style="cursor: pointer; padding: 1rem;" onclick="viewCompany('${s}')">
+                                <div style="font-weight: 600; font-size: 0.9rem;">${s}</div>
+                                <div style="font-size: 0.75rem; color: #64748b; margin-top: 0.25rem;">NSE: ${s}</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        } catch (e) {
+            el.innerHTML = `<div class="empty">Error loading stocks</div>`;
+        }
+    }
+
+    async function viewCompany(symbol) {
+        selectedCompany = symbol;
+        currentPage = 'company';
+        renderNav();
+        render();
+    }
+
+    async function renderCompany(el) {
+        if (!selectedCompany) { el.innerHTML = '<div class="empty">Select a company first</div>'; return; }
+        el.innerHTML = '<div class="loading">Loading company data...</div>';
+        try {
+            const companies = await fetchAPI('/companies');
+            const comp = companies.companies.find(c => c.nse_symbol === selectedCompany);
+            if (!comp) { el.innerHTML = '<div class="empty">Company not found</div>'; return; }
+
+            const [profile, analysis] = await Promise.all([
+                fetchAPI(`/companies/${comp.id}`),
+                fetchAPI(`/companies/${comp.id}/analysis`).catch(() => null)
+            ]);
+
+            const company = profile.company;
+            const summary = profile.summary;
+            const mcap = company.market_cap ? `₹${(company.market_cap / 1e7).toFixed(0)} Cr` : 'N/A';
+
+            el.innerHTML = `
+                <div class="fade-in">
+                    <button class="btn btn-secondary" onclick="navigate('sectors')" style="margin-bottom: 1rem;">← Back to Sectors</button>
+                    <h2 style="font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem;" class="gradient-text">${company.company_name || selectedCompany}</h2>
+                    <div style="color: #94a3b8; font-size: 0.875rem; margin-bottom: 1.5rem;">
+                        NSE: ${company.nse_symbol} | Sector: ${(company.sector || '').replace('_', ' ')} | MCap: ${mcap}
+                    </div>
+
+                    <div class="grid-4" style="margin-bottom: 1.5rem;">
+                        ${company.pe_ratio ? `<div class="card"><div style="color: #94a3b8; font-size: 0.75rem;">P/E Ratio</div><div style="font-size: 1.25rem; font-weight: 600;">${company.pe_ratio.toFixed(2)}</div></div>` : ''}
+                        ${company.pb_ratio ? `<div class="card"><div style="color: #94a3b8; font-size: 0.75rem;">P/B Ratio</div><div style="font-size: 1.25rem; font-weight: 600;">${company.pb_ratio.toFixed(2)}</div></div>` : ''}
+                        ${company.roe ? `<div class="card"><div style="color: #94a3b8; font-size: 0.75rem;">ROE</div><div style="font-size: 1.25rem; font-weight: 600;">${(company.roe * 100).toFixed(1)}%</div></div>` : ''}
+                        ${company.current_price ? `<div class="card"><div style="color: #94a3b8; font-size: 0.75rem;">Current Price</div><div style="font-size: 1.25rem; font-weight: 600;">₹${company.current_price.toFixed(2)}</div></div>` : ''}
+                    </div>
+
+                    <div class="grid-2">
+                        <div class="card">
+                            <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 1rem;">Summary</h3>
+                            <div style="font-size: 0.875rem; line-height: 1.8;">
+                                <div><span style="color: #94a3b8;">Announcements:</span> ${summary.total_announcements}</div>
+                                <div><span style="color: #94a3b8;">Frequency:</span> ${summary.announcement_frequency}</div>
+                                <div><span style="color: #94a3b8;">Themes:</span> ${summary.key_themes.join(', ') || 'None'}</div>
+                                <div><span style="color: #94a3b8;">Categories:</span> ${summary.top_categories.join(', ') || 'None'}</div>
+                            </div>
+                        </div>
+                        ${analysis ? `
+                        <div class="card">
+                            <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 1rem;">Technical Analysis</h3>
+                            <div style="font-size: 0.875rem; line-height: 1.8;">
+                                <div><span style="color: #94a3b8;">Price:</span> ₹${analysis.price_analysis?.current_price || 'N/A'}</div>
+                                <div><span style="color: #94a3b8;">Trend:</span> ${analysis.price_analysis?.trend || 'N/A'}</div>
+                                <div><span style="color: #94a3b8;">Valuation:</span> ${analysis.valuation?.pe_assessment || 'N/A'}</div>
+                                <div><span style="color: #94a3b8;">RSI:</span> ${analysis.technical_signals?.rsi_signal || 'N/A'}</div>
+                                <div><span style="color: #94a3b8;">MACD:</span> ${analysis.technical_signals?.macd_signal || 'N/A'}</div>
+                            </div>
+                        </div>
+                        ` : ''}
+                    </div>
+
+                    ${profile.key_announcements.length > 0 ? `
+                    <div class="card" style="margin-top: 1rem;">
+                        <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 1rem;">Recent Announcements</h3>
+                        ${profile.key_announcements.slice(0, 10).map(ann => `
+                            <div style="border-left: 3px solid #3b82f6; padding-left: 1rem; margin-bottom: 0.75rem;">
+                                <div style="font-size: 0.875rem;">${ann.headline || ann.category}</div>
+                                <div style="font-size: 0.75rem; color: #64748b;">${ann.category} | ${ann.announcement_date}</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                    ` : ''}
+                </div>
+            `;
+        } catch (e) {
+            el.innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+        }
+    }
+
+    async function renderAnnouncements(el) {
+        el.innerHTML = '<div class="loading">Loading dates...</div>';
+        try {
+            const { dates } = await fetchAPI('/cache/dates');
+            const recentDates = dates.slice(-14);
+            const selectedDate = recentDates[recentDates.length - 1];
+
+            el.innerHTML = `
+                <div class="fade-in">
+                    <h2 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 1.5rem;">Announcements</h2>
+                    <div style="margin-bottom: 1.5rem;">
+                        <select id="date-select" class="btn btn-secondary" onchange="loadDateAnnouncements()" style="padding: 0.5rem 1rem;">
+                            ${recentDates.map(d => `<option value="${d}">${d}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div id="announcements-content"></div>
+                </div>
+            `;
+            document.getElementById('date-select').value = selectedDate;
+            loadDateAnnouncements();
+        } catch (e) {
+            el.innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+        }
+    }
+
+    async function loadDateAnnouncements() {
+        const date = document.getElementById('date-select').value;
+        const el = document.getElementById('announcements-content');
+        el.innerHTML = '<div class="loading">Loading announcements...</div>';
+        try {
+            const data = await fetchAPI(`/cache/${date}/announcements?important_only=true`);
+            const companies = Object.entries(data.by_company);
+
+            el.innerHTML = `
+                <div class="grid-4" style="margin-bottom: 1.5rem;">
+                    <div class="card"><div style="color: #94a3b8; font-size: 0.75rem;">Total</div><div style="font-size: 1.5rem; font-weight: 700;" class="gradient-text">${data.total}</div></div>
+                    <div class="card"><div style="color: #94a3b8; font-size: 0.75rem;">Companies</div><div style="font-size: 1.5rem; font-weight: 700;" class="gradient-text">${companies.length}</div></div>
+                    <div class="card"><div style="color: #94a3b8; font-size: 0.75rem;">BSE</div><div style="font-size: 1.5rem; font-weight: 700; color: #60a5fa;">${data.stats.by_exchange?.BSE || 0}</div></div>
+                    <div class="card"><div style="color: #94a3b8; font-size: 0.75rem;">NSE</div><div style="font-size: 1.5rem; font-weight: 700; color: #34d399;">${data.stats.by_exchange?.NSE || 0}</div></div>
+                </div>
+                ${companies.length === 0 ? '<div class="empty">No announcements for this date</div>' :
+                companies.slice(0, 30).map(([key, comp]) => `
+                    <div class="card">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                            <span style="font-weight: 600;">${comp.company_name || key}</span>
+                            <span style="font-size: 0.75rem; color: #64748b;">${comp.announcements.length} announcements</span>
+                        </div>
+                        ${comp.announcements.slice(0, 3).map(ann => `
+                            <div style="font-size: 0.875rem; color: #cbd5e1; display: flex; gap: 0.5rem; margin-top: 0.25rem;">
+                                <span style="font-size: 0.7rem; padding: 0.125rem 0.5rem; border-radius: 4px; background: ${ann.exchange === 'BSE' ? '#1e3a5f' : '#1a3a2a'}; color: ${ann.exchange === 'BSE' ? '#60a5fa' : '#34d399'};">${ann.exchange}</span>
+                                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${ann.headline || ann.category}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                `).join('')}
+            `;
+        } catch (e) {
+            el.innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+        }
+    }
+
+    async function renderSetup(el) {
+        el.innerHTML = `
+            <div class="fade-in">
+                <h2 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 1.5rem;">Setup</h2>
+                <div class="card">
+                    <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 1rem;">Data Status</h3>
+                    <div id="setup-status">Loading...</div>
+                </div>
+            </div>
+        `;
+        try {
+            const data = await fetchAPI('/dashboard');
+            document.getElementById('setup-status').innerHTML = `
+                <div style="font-size: 0.875rem; line-height: 2;">
+                    <div>Companies loaded: <strong>${data.total_companies}</strong></div>
+                    <div>Announcements imported: <strong>${data.total_announcements}</strong></div>
+                    <div>Sectors tracked: <strong>${Object.keys(data.sector_distribution).length}</strong></div>
+                    <div style="margin-top: 1rem; color: #34d399;">System is ready! Navigate to Dashboard or Sectors to explore.</div>
+                </div>
+            `;
+        } catch (e) {
+            document.getElementById('setup-status').innerHTML = `<div style="color: #f87171;">Error: ${e.message}</div>`;
+        }
+    }
+
+    // Initial render
+    renderNav();
+    render();
+    </script>
+</body>
+</html>
