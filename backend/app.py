@@ -1,8 +1,13 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from data.storage.db import get_db, init_db
 from typing import Optional
+from pathlib import Path
 import json
+
+FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
 app = FastAPI(title="AI Equity Research API", version="4.0.0")
 
@@ -268,3 +273,8 @@ def get_stats():
         "by_exchange": by_exchange,
         "by_insight_type": by_type,
     }
+
+
+@app.get("/")
+def serve_frontend():
+    return FileResponse(str(FRONTEND_DIR / "index.html"))
