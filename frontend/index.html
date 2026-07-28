@@ -342,7 +342,9 @@ function renderCompany(el) {
                 html += '<span class="muted" style="font-size:.65rem;white-space:nowrap;margin-left:.5rem">' + (a.announcement_date || '') + '</span>';
                 html += '</div>';
                 html += '<div class="muted" style="font-size:.7rem;margin-top:.15rem">' + (a.exchange || '') + ' | ' + (a.category || '') + '</div>';
-                if (a.description) {
+                if (a.ai_summary) {
+                    html += '<div style="margin-top:.35rem;padding:.5rem;background:#0f172a;border-radius:6px;border-left:3px solid #8b5cf6;font-size:.75rem;color:#c4b5fd;line-height:1.5">' + a.ai_summary + '</div>';
+                } else if (a.description) {
                     var desc = a.description.substring(0, 200);
                     if (a.description.length > 200) desc += '...';
                     html += '<div style="font-size:.7rem;color:#64748b;margin-top:.15rem">' + desc + '</div>';
