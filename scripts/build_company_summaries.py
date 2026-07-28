@@ -23,16 +23,6 @@ def build_summaries():
         cursor.execute("SELECT COUNT(*) FROM announcements WHERE company_id = ?", (company_id,))
         total_ann = cursor.fetchone()[0]
 
-        cursor.execute("""
-            SELECT COUNT(*) FROM announcements
-            WHERE company_id = ? AND category IN (
-                'Financial Results', 'Outcome of Board Meeting', 'Dividend',
-                'Investor Presentation', 'Analysts/Institutional Investor Meet/Con. Call Updates',
-                'Award of Order / Receipt of Order', 'Press Release'
-            )
-        """, (company_id,))
-        important_ann = cursor.fetchone()[0]
-
         # Get insights
         cursor.execute("""
             SELECT insight_type, insight_subtype, sentiment, summary, amount, period, headline
@@ -97,13 +87,6 @@ def build_summaries():
             else:
                 dividend_text = "Dividend announced"
 
-        # Credit rating
-        has_credit = 0
-        credit_text = None
-        if 'credit_rating' in by_type:
-            has_credit = 1
-            credit_text = by_type['credit_rating'][0].get('summary', '')[:200]
-
         # Sentiment
         sentiments = Counter(i['sentiment'] for i in insights if i.get('sentiment'))
 
@@ -118,18 +101,18 @@ def build_summaries():
 
         cursor.execute("""
             INSERT OR REPLACE INTO company_summary
-            (company_id, total_announcements, important_announcements,
+            (company_id, total_announcements,
              has_guidance, guidance_text, has_capex_news, capex_text,
              has_order_news, order_text, has_financial_results, financial_results_text,
-             has_dividend_news, dividend_text, has_credit_rating, credit_rating_text,
+             has_dividend_news, dividend_text,
              sentiment_positive, sentiment_negative, sentiment_neutral,
              key_themes, latest_announcement_date, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """, (
-            company_id, total_ann, important_ann,
+            company_id, total_ann,
             has_guidance, guidance_text, has_capex, capex_text,
             has_orders, order_text, has_financials, financial_text,
-            has_dividend, dividend_text, has_credit, credit_text,
+            has_dividend, dividend_text,
             sentiments.get('positive', 0), sentiments.get('negative', 0), sentiments.get('neutral', 0),
             json.dumps(themes), latest_date,
         ))

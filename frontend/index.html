@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Equity Research - Small Cap</title>
+    <title>AI Equity Research - Small Cap India</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0}
@@ -32,19 +32,13 @@
         .tag-pos{background:#064e3b;color:#34d399}
         .tag-neg{background:#7f1d1d;color:#fca5a5}
         .tag-neu{background:#1e3a5f;color:#60a5fa}
-        .tag-guide{background:#4c1d95;color:#c4b5fd}
-        .tag-fin{background:#065f46;color:#6ee7b7}
-        .tag-order{background:#78350f;color:#fbbf24}
-        .tag-capex{background:#164e63;color:#67e8f9}
-        .tag-div{background:#713f12;color:#fde68a}
-        .tag-mgmt{background:#312e81;color:#a5b4fc}
     </style>
 </head>
 <body>
 <div id="app">
     <nav style="border-bottom:1px solid #334155;padding:.75rem 1.25rem">
         <div style="max-width:1400px;margin:0 auto;display:flex;align-items:center;justify-content:space-between">
-            <div style="font-size:1.1rem;font-weight:700" class="grad">AI Equity Research</div>
+            <div style="font-size:1.1rem;font-weight:700" class="grad">AI Equity Research - Small Cap India</div>
             <div id="nav"></div>
         </div>
     </nav>
@@ -58,7 +52,7 @@ let S={page:'dashboard',sector:null,companyId:null,filters:{}};
 async function api(e){const r=await fetch(`${API}${e}`);if(!r.ok)throw new Error(r.status);return r.json()}
 
 function nav(){
-    const p=['dashboard','companies','announcements'];
+    const p=['dashboard','companies'];
     document.getElementById('nav').innerHTML=p.map(x=>
         `<button class="btn ${S.page===x?'btn-a':'btn-s'}" onclick="go('${x}')" style="margin-left:.5rem">${x[0].toUpperCase()+x.slice(1)}</button>`
     ).join('');
@@ -70,28 +64,39 @@ function render(){
     const el=document.getElementById('content');
     if(S.page==='dashboard')rDash(el);
     else if(S.page==='companies')rCompanies(el);
-    else if(S.page==='announcements')rAnn(el);
     else if(S.page==='company')rCompany(el);
 }
 
-function fmt(n){return n?(n/1e7).toFixed(0)+' Cr':'-'}
-function pct(n){return n?(n*100).toFixed(1)+'%':'-'}
+function fmt(n){return n?(n).toFixed(0)+' Cr':'-'}
+function fmtShort(n){if(!n)return'-';if(n>=1e7)return(n/1e7).toFixed(1)+' Cr';if(n>=1e5)return(n/1e5).toFixed(1)+' L';return n.toFixed(0)}
 
 async function rDash(el){
     el.innerHTML='<div style="text-align:center;padding:4rem;color:#64748b">Loading...</div>';
     try{
-        const d=await api('/dashboard');
+        const d=await api('/stats');
         el.innerHTML=`<div class="fade">
             <div class="g4" style="margin-bottom:1rem">
                 <div class="card"><div style="color:#94a3b8;font-size:.75rem">Companies</div><div style="font-size:1.75rem;font-weight:700" class="grad">${d.total_companies}</div></div>
                 <div class="card"><div style="color:#94a3b8;font-size:.75rem">Announcements</div><div style="font-size:1.75rem;font-weight:700" class="grad">${d.total_announcements.toLocaleString()}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.75rem">Insights Extracted</div><div style="font-size:1.75rem;font-weight:700" class="grad">${d.total_insights.toLocaleString()}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.75rem">Avg MCap</div><div style="font-size:1.75rem;font-weight:700" class="grad">₹${d.averages?.avg_mcap||0} Cr</div></div>
+                <div class="card"><div style="color:#94a3b8;font-size:.75rem">Insights</div><div style="font-size:1.75rem;font-weight:700" class="grad">${d.total_insights.toLocaleString()}</div></div>
+                <div class="card"><div style="color:#94a3b8;font-size:.75rem">Active Companies</div><div style="font-size:1.75rem;font-weight:700" class="grad">${d.companies_with_announcements}</div></div>
             </div>
-            <div class="g3">
+            <div class="g2">
+                <div class="card">
+                    <h3 style="font-size:.9rem;font-weight:600;margin-bottom:.75rem">By Exchange</h3>
+                    ${Object.entries(d.by_exchange||{}).map(([k,v])=>`
+                        <div style="display:flex;align-items:center;margin-bottom:.4rem">
+                            <span style="width:60px;font-size:.75rem;text-transform:uppercase">${k}</span>
+                            <div style="flex:1;margin:0 .5rem;background:#334155;border-radius:9999px;height:5px">
+                                <div style="background:#8b5cf6;height:5px;border-radius:9999px;width:${(v/d.total_announcements)*100}%"></div>
+                            </div>
+                            <span style="font-size:.7rem;color:#94a3b8">${v.toLocaleString()}</span>
+                        </div>
+                    `).join('')}
+                </div>
                 <div class="card">
                     <h3 style="font-size:.9rem;font-weight:600;margin-bottom:.75rem">Insight Types</h3>
-                    ${Object.entries(d.insight_types||{}).filter(([k])=>k!=='general').map(([k,v])=>`
+                    ${Object.entries(d.by_insight_type||{}).filter(([k])=>k!=='general').map(([k,v])=>`
                         <div style="display:flex;align-items:center;margin-bottom:.4rem;cursor:pointer" onclick="go('companies',{insightFilter:'${k}'})">
                             <span style="width:100px;font-size:.7rem;text-transform:capitalize">${k.replace(/_/g,' ')}</span>
                             <div style="flex:1;margin:0 .5rem;background:#334155;border-radius:9999px;height:5px">
@@ -101,260 +106,158 @@ async function rDash(el){
                         </div>
                     `).join('')}
                 </div>
-                <div class="card">
-                    <h3 style="font-size:.9rem;font-weight:600;margin-bottom:.75rem">Company Coverage</h3>
-                    ${Object.entries(d.summary_stats||{}).map(([k,v])=>`
-                        <div style="display:flex;justify-content:space-between;margin-bottom:.5rem;font-size:.8rem">
-                            <span style="color:#94a3b8">${k.replace(/_/g,' ').replace('with ','')}</span>
-                            <span style="font-weight:600">${v||0} / ${d.total_companies}</span>
-                        </div>
-                    `).join('')}
-                </div>
-                <div class="card">
-                    <h3 style="font-size:.9rem;font-weight:600;margin-bottom:.75rem">Sectors</h3>
-                    ${Object.entries(d.sector_distribution).slice(0,8).map(([s,c])=>`
-                        <div style="display:flex;align-items:center;margin-bottom:.4rem;cursor:pointer" onclick="go('companies',{sector:'${s}'})">
-                            <span style="width:110px;font-size:.7rem;text-transform:capitalize">${s.replace(/_/g,' ')}</span>
-                            <div style="flex:1;margin:0 .5rem;background:#334155;border-radius:9999px;height:5px">
-                                <div style="background:#3b82f6;height:5px;border-radius:9999px;width:${(c/d.total_companies)*100}%"></div>
-                            </div>
-                            <span style="font-size:.7rem;color:#94a3b8">${c}</span>
-                        </div>
-                    `).join('')}
-                </div>
+            </div>
+            <div style="margin-top:1rem;text-align:center">
+                <button class="btn btn-p" onclick="go('companies')" style="padding:.6rem 1.5rem;font-size:.9rem">Browse Companies</button>
             </div>
         </div>`;
-    }catch(e){el.innerHTML=`<div style="text-align:center;padding:4rem;color:#64748b">Error: ${e.message}</div>`}
+    }catch(e){el.innerHTML=`<div class="card">Error: ${e.message}</div>`}
 }
 
 async function rCompanies(el){
     el.innerHTML='<div style="text-align:center;padding:4rem;color:#64748b">Loading...</div>';
     try{
-        const [sec,data]=await Promise.all([api('/sectors'),api(`/companies?sector=${S.sector||''}&limit=200`)]);
-        const filters=secFilters();
+        const[sectors]=await Promise.all([api('/sectors')]);
+        const params=new URLSearchParams();
+        if(S.sector)params.set('sector',S.sector);
+        if(S.search)params.set('search',S.search);
+        if(S.insightFilter){
+            const map={guidance:'has_guidance',capex:'has_capex',order:'has_orders',dividend:'has_dividend',financial:'has_financials'};
+            if(map[S.insightFilter])params.set(map[S.insightFilter],'1');
+        }
+        params.set('limit','100');
+        if(S.offset)params.set('offset',String(S.offset));
+        const d=await api(`/companies?${params}`);
+
         el.innerHTML=`<div class="fade">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
-                <h2 style="font-size:1.25rem;font-weight:700">Companies (${data.total})</h2>
-                <div style="display:flex;gap:.5rem">
-                    <input id="search" placeholder="Search..." style="width:180px" onkeyup="fCompanies()">
-                    <select id="sortBy" onchange="fCompanies()"><option value="market_cap">Market Cap</option><option value="pe_ratio">P/E</option><option value="roe">ROE</option><option value="total_announcements">Announcements</option><option value="company_name">Name</option></select>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+                <div>
+                    <input type="text" placeholder="Search company or symbol..." value="${S.search||''}"
+                        onkeyup="if(event.key==='Enter'){S.search=this.value;S.offset=0;rCompanies(document.getElementById('content'))}"
+                        style="width:280px">
+                    <button class="btn btn-s" onclick="S.search=document.querySelector('input').value;S.offset=0;rCompanies(document.getElementById('content'))" style="margin-left:.25rem">Search</button>
                 </div>
+                <div style="color:#94a3b8;font-size:.8rem">${d.total.toLocaleString()} companies</div>
             </div>
-            <div style="margin-bottom:.75rem">
-                <span class="chip ${!S.sector?'a':''}" onclick="go('companies',{sector:null})">All</span>
-                ${Object.keys(sec.sectors).map(s=>`<span class="chip ${S.sector===s?'a':''}" onclick="go('companies',{sector:'${s}'})">${s.replace(/_/g,' ')}</span>`).join('')}
+            <div style="margin-bottom:1rem;display:flex;flex-wrap:wrap;gap:.25rem">
+                <span class="chip ${!S.sector?'a':''}" onclick="S.sector=null;S.offset=0;rCompanies(document.getElementById('content'))">All</span>
+                ${Object.entries(sectors.sectors||{}).map(([k,v])=>
+                    `<span class="chip ${S.sector===k?'a':''}" onclick="S.sector='${k}';S.offset=0;rCompanies(document.getElementById('content'))">${k.replace(/_/g,' ')} (${v})</span>`
+                ).join('')}
             </div>
-            <div style="margin-bottom:.75rem;display:flex;gap:.5rem;flex-wrap:wrap">
-                <span class="chip ${S.hasGuidance===1?'a':''}" onclick="toggleFilter('hasGuidance',1)">Has Guidance</span>
-                <span class="chip ${S.hasCapex===1?'a':''}" onclick="toggleFilter('hasCapex',1)">Has Capex</span>
-                <span class="chip ${S.hasOrders===1?'a':''}" onclick="toggleFilter('hasOrders',1)">Has Orders</span>
+            <div style="overflow-x:auto">
+                <table>
+                    <thead>
+                        <tr>
+                            <th onclick="sort('company')" style="cursor:pointer">Company</th>
+                            <th onclick="sort('market_cap')" style="cursor:pointer">MCap</th>
+                            <th>Sector</th>
+                            <th>Exch</th>
+                            <th onclick="sort('announcements')" style="cursor:pointer">Anns</th>
+                            <th>Insights</th>
+                            <th>Latest</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${d.companies.map(c=>`<tr onclick="go('company',{companyId:${c.id}})" style="cursor:pointer">
+                            <td>
+                                <div style="font-weight:600;font-size:.85rem">${c.company_name}</div>
+                                <div style="font-size:.7rem;color:#94a3b8">${c.nse_symbol||c.bse_code||''}</div>
+                            </td>
+                            <td style="font-size:.75rem">₹${fmt(c.market_cap_cr)}</td>
+                            <td><span style="font-size:.65rem;padding:.15rem .4rem;border-radius:4px;background:#1e3a5f;color:#60a5fa">${(c.sector||'other').replace(/_/g,' ')}</span></td>
+                            <td style="font-size:.7rem">${c.nse_symbol?'NSE':''}${c.nse_symbol&&c.bse_code?'/':''}${c.bse_code?'BSE':''}</td>
+                            <td style="font-size:.75rem">${c.total_announcements}</td>
+                            <td style="font-size:.7rem">
+                                ${c.has_guidance?'<span class="tag tag-guide">G</span>':''}
+                                ${c.has_orders?'<span class="tag" style="background:#78350f;color:#fbbf24">O</span>':''}
+                                ${c.has_capex?'<span class="tag" style="background:#164e63;color:#67e8f9">C</span>':''}
+                                ${c.has_dividend?'<span class="tag" style="background:#713f12;color:#fde68a">D</span>':''}
+                                ${c.has_financials?'<span class="tag" style="background:#065f46;color:#6ee7b7">F</span>':''}
+                            </td>
+                            <td style="font-size:.7rem;color:#94a3b8">${c.latest_announcement||'-'}</td>
+                        </tr>`).join('')}
+                    </tbody>
+                </table>
             </div>
-            <div class="card" style="overflow-x:auto">
-                <table><thead><tr>
-                    <th>Company</th><th>Sector</th><th>MCap</th><th>P/E</th><th>ROE</th><th>Insights</th><th>Trend</th><th></th>
-                </tr></thead><tbody>
-                    ${data.companies.map(c=>`<tr>
-                        <td><div style="font-weight:600">${c.nse_symbol||'-'}</div><div style="font-size:.65rem;color:#64748b">${(c.company_name||'').substring(0,25)}</div></td>
-                        <td style="text-transform:capitalize;font-size:.7rem">${(c.sector||'').replace(/_/g,' ')}</td>
-                        <td>${fmt(c.market_cap)}</td>
-                        <td>${c.pe_ratio?c.pe_ratio.toFixed(1):'-'}</td>
-                        <td>${pct(c.roe)}</td>
-                        <td>
-                            ${c.has_guidance?'<span class="tag tag-guide">G</span>':''}
-                            ${c.has_capex_news?'<span class="tag tag-capex">C</span>':''}
-                            ${c.has_order_news?'<span class="tag tag-order">O</span>':''}
-                            ${c.has_financial_results?'<span class="tag tag-fin">F</span>':''}
-                            ${c.has_dividend_news?'<span class="tag tag-div">D</span>':''}
-                            <span style="font-size:.65rem;color:#64748b;margin-left:.25rem">${c.total_announcements||0}</span>
-                        </td>
-                        <td style="font-size:.7rem">${c.sentiment_positive>c.sentiment_negative?'📈':c.sentiment_negative>c.sentiment_positive?'📉':'-'}</td>
-                        <td><button class="btn btn-p" onclick="go('company',{companyId:${c.id}})" style="font-size:.7rem">View</button></td>
-                    </tr>`).join('')}
-                </tbody></table>
-            </div>
+            ${d.total>100?`<div style="display:flex;justify-content:center;gap:.5rem;margin-top:1rem">
+                <button class="btn btn-s" onclick="S.offset=Math.max(0,(S.offset||0)-100);rCompanies(document.getElementById('content'))" ${!S.offset?'disabled':''}>Prev</button>
+                <span style="color:#94a3b8;font-size:.8rem;line-height:2">Page ${Math.floor((S.offset||0)/100)+1} of ${Math.ceil(d.total/100)}</span>
+                <button class="btn btn-s" onclick="S.offset=(S.offset||0)+100;rCompanies(document.getElementById('content'))" ${(S.offset||0)+100>=d.total?'disabled':''}>Next</button>
+            </div>`:''}
         </div>`;
-    }catch(e){el.innerHTML=`<div style="text-align:center;padding:4rem;color:#64748b">Error: ${e.message}</div>`}
+    }catch(e){el.innerHTML=`<div class="card">Error: ${e.message}</div>`}
 }
 
-function toggleFilter(key,val){
-    S[key]=S[key]===val?undefined:val;
+function sort(col){
+    if(S.sortBy===col)S.sortOrder=S.sortOrder==='desc'?'asc':'desc';
+    else{S.sortBy=col;S.sortOrder='desc'}
     rCompanies(document.getElementById('content'));
 }
 
-function secFilters(){
-    return `<div></div>`;
-}
-
-async function fCompanies(){
-    const search=document.getElementById('search')?.value||'';
-    const sortBy=document.getElementById('sortBy')?.value||'market_cap';
-    let url=`/companies?sector=${S.sector||''}&search=${search}&sort_by=${sortBy}&limit=200`;
-    if(S.hasGuidance)url+=`&has_guidance=1`;
-    if(S.hasCapex)url+=`&has_capex=1`;
-    if(S.hasOrders)url+=`&has_orders=1`;
-    try{
-        const data=await api(url);
-        const tbody=document.querySelector('tbody');
-        if(tbody)tbody.innerHTML=data.companies.map(c=>`<tr>
-            <td><div style="font-weight:600">${c.nse_symbol||'-'}</div><div style="font-size:.65rem;color:#64748b">${(c.company_name||'').substring(0,25)}</div></td>
-            <td style="text-transform:capitalize;font-size:.7rem">${(c.sector||'').replace(/_/g,' ')}</td>
-            <td>${fmt(c.market_cap)}</td>
-            <td>${c.pe_ratio?c.pe_ratio.toFixed(1):'-'}</td>
-            <td>${pct(c.roe)}</td>
-            <td>
-                ${c.has_guidance?'<span class="tag tag-guide">G</span>':''}
-                ${c.has_capex_news?'<span class="tag tag-capex">C</span>':''}
-                ${c.has_order_news?'<span class="tag tag-order">O</span>':''}
-                ${c.has_financial_results?'<span class="tag tag-fin">F</span>':''}
-                ${c.has_dividend_news?'<span class="tag tag-div">D</span>':''}
-                <span style="font-size:.65rem;color:#64748b;margin-left:.25rem">${c.total_announcements||0}</span>
-            </td>
-            <td style="font-size:.7rem">${c.sentiment_positive>c.sentiment_negative?'📈':c.sentiment_negative>c.sentiment_positive?'📉':'-'}</td>
-            <td><button class="btn btn-p" onclick="go('company',{companyId:${c.id}})" style="font-size:.7rem">View</button></td>
-        </tr>`).join('');
-    }catch(e){}
-}
-
 async function rCompany(el){
-    if(!S.companyId){el.innerHTML='<div style="text-align:center;padding:4rem;color:#64748b">Select a company</div>';return}
     el.innerHTML='<div style="text-align:center;padding:4rem;color:#64748b">Loading...</div>';
     try{
-        const[profile,anns,techs]=await Promise.all([
-            api(`/companies/${S.companyId}`),
-            api(`/companies/${S.companyId}/announcements?limit=30`),
-            api(`/companies/${S.companyId}/technicals`).catch(()=>null)
-        ]);
-        const c=profile.company,s=profile.summary,ins=profile.recent_insights,t=techs?.indicators;
-        el.innerHTML=`<div class="fade">
-            <button class="btn btn-s" onclick="go('companies')" style="margin-bottom:.75rem">← Back</button>
-            <h2 style="font-size:1.25rem;font-weight:700;margin-bottom:.25rem" class="grad">${c.company_name}</h2>
-            <div style="color:#94a3b8;font-size:.8rem;margin-bottom:1rem">
-                NSE: ${c.nse_symbol||'N/A'} | Sector: ${(c.sector||'').replace(/_/g,' ')} | MCap: ${fmt(c.market_cap)}
-            </div>
-            <div class="g4" style="margin-bottom:1rem">
-                <div class="card"><div style="color:#94a3b8;font-size:.65rem">Price</div><div style="font-size:1.1rem;font-weight:600">₹${c.current_price?.toFixed(2)||'N/A'}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.65rem">P/E</div><div style="font-size:1.1rem;font-weight:600">${c.pe_ratio?.toFixed(1)||'N/A'}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.65rem">ROE</div><div style="font-size:1.1rem;font-weight:600">${pct(c.roe)}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.65rem">Announcements</div><div style="font-size:1.1rem;font-weight:600">${s?.total_announcements||0}</div></div>
-            </div>
-            <div style="margin-bottom:1rem;display:flex;gap:.5rem;flex-wrap:wrap">
-                ${s?.has_guidance?'<span class="tag tag-guide" style="font-size:.7rem;padding:.25rem .5rem">Has Guidance</span>':''}
-                ${s?.has_capex_news?'<span class="tag tag-capex" style="font-size:.7rem;padding:.25rem .5rem">Capex News</span>':''}
-                ${s?.has_order_news?'<span class="tag tag-order" style="font-size:.7rem;padding:.25rem .5rem">Order News</span>':''}
-                ${s?.has_financial_results?'<span class="tag tag-fin" style="font-size:.7rem;padding:.25rem .5rem">Financial Results</span>':''}
-                ${s?.has_dividend_news?'<span class="tag tag-div" style="font-size:.7rem;padding:.25rem .5rem">Dividend</span>':''}
-                ${s?.has_credit_rating?'<span class="tag tag-neu" style="font-size:.7rem;padding:.25rem .5rem">Credit Rating</span>':''}
-            </div>
-            <div class="g3">
-                <div class="card">
-                    <h3 style="font-size:.85rem;font-weight:600;margin-bottom:.5rem">Key Info</h3>
-                    <div style="font-size:.8rem;line-height:1.8">
-                        <div><span style="color:#94a3b8">P/B:</span> ${c.pb_ratio?.toFixed(2)||'N/A'}</div>
-                        <div><span style="color:#94a3b8">EPS:</span> ₹${c.eps?.toFixed(2)||'N/A'}</div>
-                        <div><span style="color:#94a3b8">D/E:</span> ${c.debt_to_equity?.toFixed(2)||'N/A'}</div>
-                        <div><span style="color:#94a3b8">Beta:</span> ${c.beta?.toFixed(2)||'N/A'}</div>
-                        <div><span style="color:#94a3b8">52W High:</span> ₹${c.week_52_high?.toFixed(2)||'N/A'}</div>
-                    </div>
-                </div>
-                <div class="card">
-                    <h3 style="font-size:.85rem;font-weight:600;margin-bottom:.5rem">Technical</h3>
-                    <div style="font-size:.8rem;line-height:1.8">
-                        <div><span style="color:#94a3b8">Trend:</span> ${t?.trend||'N/A'}</div>
-                        <div><span style="color:#94a3b8">Signal:</span> ${t?.signal||'N/A'}</div>
-                        <div><span style="color:#94a3b8">RSI:</span> ${t?.rsi_14?.toFixed(1)||'N/A'}</div>
-                        <div><span style="color:#94a3b8">SMA 50:</span> ₹${t?.sma_50?.toFixed(2)||'N/A'}</div>
-                        <div><span style="color:#94a3b8">MACD:</span> ${t?.macd?.toFixed(2)||'N/A'}</div>
-                    </div>
-                </div>
-                <div class="card">
-                    <h3 style="font-size:.85rem;font-weight:600;margin-bottom:.5rem">Sentiment</h3>
-                    <div style="font-size:.8rem;line-height:1.8">
-                        <div><span style="color:#34d399">Positive:</span> ${profile.sentiment_stats?.positive||0}</div>
-                        <div><span style="color:#fca5a5">Negative:</span> ${profile.sentiment_stats?.negative||0}</div>
-                        <div><span style="color:#60a5fa">Total Insights:</span> ${profile.sentiment_stats?.total||0}</div>
-                    </div>
-                    ${s?.guidance_text?`<div style="margin-top:.5rem;font-size:.75rem;color:#94a3b8;border-top:1px solid #334155;padding-top:.5rem"><strong>Latest Guidance:</strong> ${s.guidance_text.substring(0,100)}</div>`:''}
-                    ${s?.capex_text?`<div style="margin-top:.25rem;font-size:.75rem;color:#94a3b8"><strong>Capex:</strong> ${s.capex_text.substring(0,100)}</div>`:''}
-                    ${s?.order_text?`<div style="margin-top:.25rem;font-size:.75rem;color:#94a3b8"><strong>Orders:</strong> ${s.order_text.substring(0,100)}</div>`:''}
-                </div>
-            </div>
-            ${ins?.length?`
-            <div class="card" style="margin-top:.75rem">
-                <h3 style="font-size:.85rem;font-weight:600;margin-bottom:.5rem">Recent Insights</h3>
-                ${ins.map(i=>`<div style="border-left:3px solid ${i.sentiment==='positive'?'#34d399':i.sentiment==='negative'?'#fca5a5':'#3b82f6'};padding-left:.75rem;margin-bottom:.5rem">
-                    <div style="font-size:.8rem">${i.summary||i.headline||''}</div>
-                    <div style="font-size:.65rem;color:#64748b;display:flex;gap:.5rem;margin-top:.15rem">
-                        <span class="tag ${i.insight_type==='guidance'?'tag-guide':i.insight_type==='financial'?'tag-fin':i.insight_type==='order'?'tag-order':i.insight_type==='capex'?'tag-capex':i.insight_type==='dividend'?'tag-div':i.insight_type==='management'?'tag-mgmt':'tag-neu'}">${i.insight_type}</span>
-                        <span class="tag ${i.sentiment==='positive'?'tag-pos':i.sentiment==='negative'?'tag-neg':'tag-neu'}">${i.sentiment}</span>
-                        ${i.amount?`<span>₹${i.amount} Cr</span>`:''}
-                        ${i.period?`<span>${i.period}</span>`:''}
-                    </div>
-                </div>`).join('')}
-            </div>`:''}
-            ${anns.announcements?.length?`
-            <div class="card" style="margin-top:.75rem">
-                <h3 style="font-size:.85rem;font-weight:600;margin-bottom:.5rem">Announcements (${anns.count})</h3>
-                ${anns.announcements.slice(0,15).map(a=>`<div style="font-size:.8rem;padding:.25rem 0;border-bottom:1px solid #1e293b">
-                    <div style="display:flex;gap:.5rem;align-items:center">
-                        <span style="font-size:.6rem;padding:.1rem .4rem;border-radius:3px;background:${a.exchange==='BSE'?'#1e3a5f':'#1a3a2a'};color:${a.exchange==='BSE'?'#60a5fa':'#34d399'}">${a.exchange}</span>
-                        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${a.headline||a.category}</span>
-                        <span style="font-size:.6rem;color:#64748b;white-space:nowrap">${a.announcement_date}</span>
-                    </div>
-                </div>`).join('')}
-            </div>`:''}
-        </div>`;
-    }catch(e){el.innerHTML=`<div style="text-align:center;padding:4rem;color:#64748b">Error: ${e.message}</div>`}
-}
+        const d=await api(`/companies/${S.companyId}`);
+        const c=d.company;
+        const anns=d.announcements;
+        const ins=d.insight_summary;
 
-async function rAnn(el){
-    el.innerHTML='<div style="text-align:center;padding:4rem;color:#64748b">Loading dates...</div>';
-    try{
-        const{dates}=await api('/cache/dates');
-        const recent=dates.slice(-14);
         el.innerHTML=`<div class="fade">
-            <h2 style="font-size:1.25rem;font-weight:700;margin-bottom:1rem">Announcements</h2>
-            <div style="display:flex;gap:.75rem;margin-bottom:1rem">
-                <select id="annDate" onchange="loadAnn()" style="width:180px">${recent.map(d=>`<option value="${d}">${d}</option>`).join('')}</select>
-                <label style="display:flex;align-items:center;gap:.5rem;font-size:.8rem"><input type="checkbox" id="annImportant" onchange="loadAnn()"> Important only</label>
-            </div>
-            <div id="annContent"></div>
-        </div>`;
-        loadAnn();
-    }catch(e){el.innerHTML=`<div style="text-align:center;padding:4rem;color:#64748b">Error: ${e.message}</div>`}
-}
-
-async function loadAnn(){
-    const date=document.getElementById('annDate')?.value;
-    const important=document.getElementById('annImportant')?.checked;
-    if(!date)return;
-    const el=document.getElementById('annContent');
-    el.innerHTML='<div style="text-align:center;padding:2rem;color:#64748b">Loading...</div>';
-    try{
-        const data=await api(`/cache/${date}/announcements?important_only=${important}`);
-        const comps=Object.entries(data.by_company);
-        el.innerHTML=`
-            <div class="g4" style="margin-bottom:1rem">
-                <div class="card"><div style="color:#94a3b8;font-size:.65rem">Total</div><div style="font-size:1.25rem;font-weight:700" class="grad">${data.total}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.65rem">Companies</div><div style="font-size:1.25rem;font-weight:700" class="grad">${comps.length}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.65rem">BSE</div><div style="font-size:1.25rem;font-weight:700;color:#60a5fa">${data.stats.by_exchange?.BSE||0}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.65rem">NSE</div><div style="font-size:1.25rem;font-weight:700;color:#34d399">${data.stats.by_exchange?.NSE||0}</div></div>
-            </div>
-            ${comps.slice(0,30).map(([k,comp])=>`
-                <div class="card">
-                    <div style="display:flex;justify-content:space-between;margin-bottom:.5rem">
-                        <span style="font-weight:600;font-size:.85rem">${comp.company_name||k}</span>
-                        <span style="font-size:.65rem;color:#64748b">${comp.announcements.length} items</span>
-                    </div>
-                    ${comp.announcements.slice(0,3).map(a=>`
-                        <div style="font-size:.8rem;color:#cbd5e1;display:flex;gap:.5rem;margin-top:.2rem">
-                            <span style="font-size:.6rem;padding:.1rem .4rem;border-radius:3px;background:${a.exchange==='BSE'?'#1e3a5f':'#1a3a2a'};color:${a.exchange==='BSE'?'#60a5fa':'#34d399'}">${a.exchange}</span>
-                            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.headline||a.category}</span>
+            <button class="btn btn-s" onclick="go('companies')" style="margin-bottom:1rem">Back to List</button>
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:1rem">
+                    <div>
+                        <h2 style="font-size:1.25rem;font-weight:700">${c.company_name}</h2>
+                        <div style="color:#94a3b8;font-size:.8rem;margin-top:.25rem">
+                            ${c.nse_symbol?`NSE: ${c.nse_symbol}`:''}
+                            ${c.nse_symbol&&c.bse_code?' | ':''}
+                            ${c.bse_code?`BSE: ${c.bse_code}`:''}
+                            ${c.group_name?` | Group: ${c.group_name}`:''}
                         </div>
-                    `).join('')}
+                    </div>
+                    <div style="text-align:right">
+                        <div style="font-size:1.5rem;font-weight:700" class="grad">₹${fmt(c.market_cap_cr)}</div>
+                        <div style="font-size:.75rem;color:#94a3b8">${c.sector||''} | ${c.industry||''}</div>
+                    </div>
                 </div>
-            `).join('')}
-        `;
-    }catch(e){el.innerHTML='<div style="text-align:center;padding:2rem;color:#64748b">Error loading</div>'}
+            </div>
+            <div class="g4" style="margin-bottom:1rem">
+                <div class="card"><div style="color:#94a3b8;font-size:.7rem">Announcements</div><div style="font-size:1.25rem;font-weight:700">${c.total_announcements}</div></div>
+                <div class="card"><div style="color:#94a3b8;font-size:.7rem">Guidance</div><div style="font-size:1.25rem;font-weight:700">${c.has_guidance?'Yes':'No'}</div></div>
+                <div class="card"><div style="color:#94a3b8;font-size:.7rem">Orders</div><div style="font-size:1.25rem;font-weight:700">${c.has_orders?'Yes':'No'}</div></div>
+                <div class="card"><div style="color:#94a3b8;font-size:.7rem">Capex</div><div style="font-size:1.25rem;font-weight:700">${c.has_capex?'Yes':'No'}</div></div>
+            </div>
+            ${(c.guidance_text||c.order_text||c.capex_text||c.dividend_text||c.financial_text)?`<div class="card">
+                <h3 style="font-size:.9rem;font-weight:600;margin-bottom:.5rem">Key Insights</h3>
+                ${c.guidance_text?`<div style="margin-bottom:.4rem"><span class="tag tag-guide">Guidance</span> <span style="font-size:.75rem">${c.guidance_text}</span></div>`:''}
+                ${c.order_text?`<div style="margin-bottom:.4rem"><span class="tag" style="background:#78350f;color:#fbbf24">Orders</span> <span style="font-size:.75rem">${c.order_text}</span></div>`:''}
+                ${c.capex_text?`<div style="margin-bottom:.4rem"><span class="tag" style="background:#164e63;color:#67e8f9">Capex</span> <span style="font-size:.75rem">${c.capex_text}</span></div>`:''}
+                ${c.dividend_text?`<div style="margin-bottom:.4rem"><span class="tag" style="background:#713f12;color:#fde68a">Dividend</span> <span style="font-size:.75rem">${c.dividend_text}</span></div>`:''}
+                ${c.financial_text?`<div style="margin-bottom:.4rem"><span class="tag" style="background:#065f46;color:#6ee7b7">Financial</span> <span style="font-size:.75rem">${c.financial_text}</span></div>`:''}
+            </div>`:''}
+            ${ins.length?`<div class="card">
+                <h3 style="font-size:.9rem;font-weight:600;margin-bottom:.5rem">Insight Breakdown</h3>
+                <div style="display:flex;flex-wrap:wrap;gap:.5rem">
+                    ${ins.map(i=>`<div style="background:#0f172a;border-radius:8px;padding:.5rem .75rem">
+                        <div style="font-size:.7rem;color:#94a3b8;text-transform:capitalize">${i.insight_type.replace(/_/g,' ')}</div>
+                        <div style="font-size:1rem;font-weight:600">${i.cnt}</div>
+                    </div>`).join('')}
+                </div>
+            </div>`:''}
+            <div class="card">
+                <h3 style="font-size:.9rem;font-weight:600;margin-bottom:.5rem">Recent Announcements</h3>
+                ${anns.length?anns.map(a=>`<div style="padding:.5rem 0;border-bottom:1px solid #334155">
+                    <div style="display:flex;justify-content:space-between;align-items:start">
+                        <div style="font-size:.8rem;font-weight:500">${a.headline||'No title'}</div>
+                        <span style="font-size:.65rem;color:#94a3b8;white-space:nowrap;margin-left:.5rem">${a.announcement_date||''}</span>
+                    </div>
+                    <div style="font-size:.7rem;color:#94a3b8;margin-top:.2rem">${a.exchange} | ${a.category||''}</div>
+                    ${a.description?`<div style="font-size:.7rem;color:#64748b;margin-top:.2rem">${a.description.substring(0,200)}${a.description.length>200?'...':''}</div>`:''}
+                </div>`).join(''):'<div style="color:#64748b;font-size:.8rem">No announcements</div>'}
+            </div>
+        </div>`;
+    }catch(e){el.innerHTML=`<div class="card">Error: ${e.message}</div>`}
 }
 
 nav();render();
