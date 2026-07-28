@@ -1,17 +1,12 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from data.storage.db import get_db, init_db
-from data.processors.announcement_parser import (
-    load_announcements_from_cache, filter_important_announcements,
-    group_by_company, get_announcement_stats, load_all_cached_dates
-)
+from data.storage.db import get_db, init_db, ensure_schema
 from data.processors.profile_builder import build_company_profile
-from analysis.fundamental import analyze_fundamentals
-from config import SECTORS
-from typing import Optional, List
+from config import SECTORS, IMPORTANT_CATEGORIES
+from typing import Optional
 import json
 
-app = FastAPI(title="AI Equity Research API", version="2.0.0")
+app = FastAPI(title="AI Equity Research API", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,6 +25,8 @@ def startup():
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='companies'")
     if not cursor.fetchone():
         init_db()
+    else:
+        ensure_schema()
     conn.close()
 
 
@@ -51,7 +48,9 @@ def list_companies(
     min_pe: float = None,
     max_pe: float = None,
     min_roe: float = None,
-    max_roe: float = None,
+    has_guidance: int = None,
+    has_capex: int = None,
+    has_orders: int = None,
     search: str = None,
     sort_by: str = "market_cap",
     sort_order: str = "desc",
@@ -61,42 +60,58 @@ def list_companies(
     conn = get_db()
     cursor = conn.cursor()
 
-    query = "SELECT * FROM companies WHERE 1=1"
+    query = """
+        SELECT c.*, cs.total_announcements, cs.important_announcements,
+               cs.has_guidance, cs.guidance_text, cs.has_capex_news, cs.capex_text,
+               cs.has_order_news, cs.order_text, cs.has_financial_results,
+               cs.has_dividend_news, cs.dividend_text, cs.sentiment_positive,
+               cs.sentiment_negative, cs.key_themes, cs.latest_announcement_date
+        FROM companies c
+        LEFT JOIN company_summary cs ON c.id = cs.company_id
+        WHERE c.is_active = 1
+    """
     params = []
 
     if sector:
-        query += " AND sector = ?"
+        query += " AND c.sector = ?"
         params.append(sector)
     if min_mcap:
-        query += " AND market_cap >= ?"
+        query += " AND c.market_cap >= ?"
         params.append(min_mcap)
     if max_mcap:
-        query += " AND market_cap <= ?"
+        query += " AND c.market_cap <= ?"
         params.append(max_mcap)
     if min_pe:
-        query += " AND pe_ratio >= ?"
+        query += " AND c.pe_ratio >= ?"
         params.append(min_pe)
     if max_pe:
-        query += " AND pe_ratio <= ?"
+        query += " AND c.pe_ratio <= ?"
         params.append(max_pe)
     if min_roe:
-        query += " AND roe >= ?"
+        query += " AND c.roe >= ?"
         params.append(min_roe)
-    if max_roe:
-        query += " AND roe <= ?"
-        params.append(max_roe)
+    if has_guidance is not None:
+        query += " AND cs.has_guidance = ?"
+        params.append(has_guidance)
+    if has_capex is not None:
+        query += " AND cs.has_capex_news = ?"
+        params.append(has_capex)
+    if has_orders is not None:
+        query += " AND cs.has_order_news = ?"
+        params.append(has_orders)
     if search:
-        query += " AND (company_name LIKE ? OR nse_symbol LIKE ?)"
+        query += " AND (c.company_name LIKE ? OR c.nse_symbol LIKE ?)"
         params.extend([f"%{search}%", f"%{search}%"])
 
-    count_query = query.replace("SELECT *", "SELECT COUNT(*)")
+    count_query = "SELECT COUNT(*) FROM (" + query + ")"
     cursor.execute(count_query, params)
     total = cursor.fetchone()[0]
 
-    valid_sorts = ['market_cap', 'pe_ratio', 'roe', 'company_name', 'nse_symbol']
+    valid_sorts = ['market_cap', 'pe_ratio', 'roe', 'company_name', 'nse_symbol', 'total_announcements']
     if sort_by in valid_sorts:
+        table = 'cs' if sort_by == 'total_announcements' else 'c'
         order = "DESC" if sort_order.lower() == "desc" else "ASC"
-        query += f" ORDER BY {sort_by} {order}"
+        query += f" ORDER BY {table}.{sort_by} {order}"
 
     query += " LIMIT ? OFFSET ?"
     params.extend([limit, offset])
@@ -110,22 +125,40 @@ def list_companies(
 
 @app.get("/api/companies/{company_id}")
 def get_company(company_id: int):
-    profile = build_company_profile(company_id)
-    if not profile.get("company"):
-        raise HTTPException(404, "Company not found")
-    return profile
-
-
-@app.get("/api/companies/{company_id}/analysis")
-def get_company_analysis(company_id: int):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT nse_symbol FROM companies WHERE id = ?", (company_id,))
-    row = cursor.fetchone()
+
+    cursor.execute("SELECT * FROM companies WHERE id = ?", (company_id,))
+    company = cursor.fetchone()
+    if not company:
+        conn.close()
+        raise HTTPException(404, "Company not found")
+
+    cursor.execute("SELECT * FROM company_summary WHERE company_id = ?", (company_id,))
+    summary = cursor.fetchone()
+
+    cursor.execute("""
+        SELECT * FROM announcement_insights WHERE company_id = ?
+        ORDER BY extracted_at DESC LIMIT 20
+    """, (company_id,))
+    recent_insights = [dict(r) for r in cursor.fetchall()]
+
+    cursor.execute("""
+        SELECT COUNT(*) as total, 
+               SUM(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END) as positive,
+               SUM(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) as negative
+        FROM announcement_insights WHERE company_id = ?
+    """, (company_id,))
+    sentiment_stats = dict(cursor.fetchone())
+
     conn.close()
-    if not row or not row['nse_symbol']:
-        raise HTTPException(404, "Company not found or no NSE symbol")
-    return analyze_fundamentals(row['nse_symbol'])
+
+    return {
+        "company": dict(company),
+        "summary": dict(summary) if summary else None,
+        "recent_insights": recent_insights,
+        "sentiment_stats": sentiment_stats,
+    }
 
 
 @app.get("/api/companies/{company_id}/announcements")
@@ -162,25 +195,30 @@ def get_company_announcements(
     return {"announcements": announcements, "count": len(announcements)}
 
 
-@app.get("/api/companies/{company_id}/financials")
-def get_company_financials(company_id: int, period: str = None):
+@app.get("/api/companies/{company_id}/insights")
+def get_company_insights(
+    company_id: int,
+    insight_type: str = None,
+    limit: int = Query(50, le=200),
+):
     conn = get_db()
     cursor = conn.cursor()
 
-    query = "SELECT * FROM financials WHERE company_id = ?"
+    query = "SELECT * FROM announcement_insights WHERE company_id = ?"
     params = [company_id]
 
-    if period:
-        query += " AND period = ?"
-        params.append(period)
+    if insight_type:
+        query += " AND insight_type = ?"
+        params.append(insight_type)
 
-    query += " ORDER BY report_date DESC LIMIT 20"
+    query += " ORDER BY extracted_at DESC LIMIT ?"
+    params.append(limit)
 
     cursor.execute(query, params)
-    financials = [dict(r) for r in cursor.fetchall()]
+    insights = [dict(r) for r in cursor.fetchall()]
     conn.close()
 
-    return {"financials": financials, "count": len(financials)}
+    return {"insights": insights, "count": len(insights)}
 
 
 @app.get("/api/companies/{company_id}/technicals")
@@ -189,17 +227,17 @@ def get_company_technicals(company_id: int):
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT * FROM technical_indicators 
-        WHERE company_id = ? 
-        ORDER BY indicator_date DESC 
+        SELECT * FROM technical_indicators
+        WHERE company_id = ?
+        ORDER BY indicator_date DESC
         LIMIT 1
     """, (company_id,))
     tech = cursor.fetchone()
 
     cursor.execute("""
-        SELECT * FROM price_history 
-        WHERE company_id = ? 
-        ORDER BY trade_date DESC 
+        SELECT * FROM price_history
+        WHERE company_id = ?
+        ORDER BY trade_date DESC
         LIMIT 30
     """, (company_id,))
     prices = [dict(r) for r in cursor.fetchall()]
@@ -225,9 +263,9 @@ def get_announcements(
     cursor = conn.cursor()
 
     query = """
-        SELECT a.*, c.company_name, c.nse_symbol 
-        FROM announcements a 
-        JOIN companies c ON a.company_id = c.id 
+        SELECT a.*, c.company_name, c.nse_symbol
+        FROM announcements a
+        JOIN companies c ON a.company_id = c.id
         WHERE 1=1
     """
     params = []
@@ -245,7 +283,6 @@ def get_announcements(
         query += " AND a.company_id = ?"
         params.append(company_id)
     if important_only:
-        from config import IMPORTANT_CATEGORIES
         placeholders = ",".join("?" * len(IMPORTANT_CATEGORIES))
         query += f" AND a.category IN ({placeholders})"
         params.extend(IMPORTANT_CATEGORIES)
@@ -260,107 +297,54 @@ def get_announcements(
     return {"announcements": announcements, "count": len(announcements)}
 
 
-@app.get("/api/cache/dates")
-def get_cached_dates():
-    dates = load_all_cached_dates()
-    return {"dates": dates}
-
-
-@app.get("/api/cache/{date}/announcements")
-def get_cached_announcements(date: str, important_only: bool = False):
-    announcements = load_announcements_from_cache(date)
-    if important_only:
-        announcements = filter_important_announcements(announcements)
-    stats = get_announcement_stats(announcements)
-    grouped = group_by_company(announcements)
-    return {
-        "date": date,
-        "stats": stats,
-        "by_company": grouped,
-        "total": len(announcements),
-    }
-
-
-@app.post("/api/companies/{company_id}/import-announcements")
-def import_announcements(company_id: int, date: str):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT bse_code, nse_symbol, company_name FROM companies WHERE id = ?", (company_id,))
-    company = cursor.fetchone()
-    if not company:
-        raise HTTPException(404, "Company not found")
-
-    announcements = load_announcements_from_cache(date)
-    imported = 0
-
-    for ann in announcements:
-        matched = False
-        if company['bse_code'] and ann.get('bse_code') == company['bse_code']:
-            matched = True
-        if company['nse_symbol'] and ann.get('nse_symbol') == company['nse_symbol']:
-            matched = True
-        if company['company_name'] and ann.get('company_name') == company['company_name']:
-            matched = True
-
-        if matched:
-            try:
-                cursor.execute('''
-                    INSERT OR IGNORE INTO announcements
-                    (company_id, exchange, category, headline, description, 
-                     announcement_date, announcement_time, is_critical, attachment_url)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    company_id, ann['exchange'], ann['category'],
-                    ann.get('headline'), ann.get('description'),
-                    ann['announcement_date'], ann.get('announcement_time'),
-                    ann.get('is_critical', 0), ann.get('attachment_url'),
-                ))
-                imported += 1
-            except Exception:
-                continue
-
-    conn.commit()
-    conn.close()
-    return {"imported": imported, "date": date}
-
-
-@app.post("/api/seed-companies")
-def seed_companies(sector: str = None):
-    from data.collectors.yfinance_data import get_stock_info
+@app.get("/api/insights/filter")
+def filter_by_insights(
+    insight_type: str = None,
+    sentiment: str = None,
+    sector: str = None,
+    min_mcap: float = None,
+    max_mcap: float = None,
+    limit: int = Query(100, le=500),
+):
     conn = get_db()
     cursor = conn.cursor()
 
-    sectors_to_seed = {sector: SECTORS[sector]} if sector else SECTORS
-    added = 0
+    query = """
+        SELECT DISTINCT c.id, c.nse_symbol, c.company_name, c.sector, c.market_cap,
+               c.current_price, c.pe_ratio, cs.has_guidance, cs.has_capex_news,
+               cs.has_order_news, cs.guidance_text, cs.capex_text, cs.order_text,
+               i.insight_type, i.summary as latest_insight, i.sentiment
+        FROM companies c
+        JOIN announcement_insights i ON c.id = i.company_id
+        LEFT JOIN company_summary cs ON c.id = cs.company_id
+        WHERE 1=1
+    """
+    params = []
 
-    for sec_name, symbols in sectors_to_seed.items():
-        for symbol in symbols:
-            try:
-                info = get_stock_info(symbol)
-                cursor.execute('''
-                    INSERT OR REPLACE INTO companies 
-                    (nse_symbol, company_name, sector, industry, market_cap, pe_ratio, 
-                     pb_ratio, dividend_yield, eps, debt_to_equity, roe, roce,
-                     current_price, sma_50, sma_200, beta, week_52_high, week_52_low)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    symbol, info.get("company_name", symbol), sec_name,
-                    info.get("industry"), info.get("market_cap"),
-                    info.get("pe_ratio"), info.get("pb_ratio"),
-                    info.get("dividend_yield"), info.get("eps"),
-                    info.get("debt_to_equity"), info.get("roe"),
-                    info.get("roce"), info.get("current_price"),
-                    info.get("sma_50"), info.get("sma_200"),
-                    info.get("beta"), info.get("52w_high"), info.get("52w_low"),
-                ))
-                added += 1
-            except Exception as e:
-                print(f"Error seeding {symbol}: {e}")
-                continue
+    if insight_type:
+        query += " AND i.insight_type = ?"
+        params.append(insight_type)
+    if sentiment:
+        query += " AND i.sentiment = ?"
+        params.append(sentiment)
+    if sector:
+        query += " AND c.sector = ?"
+        params.append(sector)
+    if min_mcap:
+        query += " AND c.market_cap >= ?"
+        params.append(min_mcap)
+    if max_mcap:
+        query += " AND c.market_cap <= ?"
+        params.append(max_mcap)
 
-    conn.commit()
+    query += " ORDER BY c.market_cap DESC LIMIT ?"
+    params.append(limit)
+
+    cursor.execute(query, params)
+    results = [dict(r) for r in cursor.fetchall()]
     conn.close()
-    return {"added": added, "sectors": list(sectors_to_seed.keys())}
+
+    return {"results": results, "count": len(results)}
 
 
 @app.get("/api/dashboard")
@@ -374,29 +358,41 @@ def get_dashboard():
     cursor.execute("SELECT COUNT(*) as cnt FROM announcements")
     total_announcements = cursor.fetchone()['cnt']
 
-    cursor.execute("SELECT sector, COUNT(*) as cnt FROM companies GROUP BY sector")
+    cursor.execute("SELECT COUNT(*) as cnt FROM announcement_insights")
+    total_insights = cursor.fetchone()['cnt']
+
+    cursor.execute("SELECT sector, COUNT(*) as cnt FROM companies GROUP BY sector ORDER BY cnt DESC")
     sector_distribution = {r['sector']: r['cnt'] for r in cursor.fetchall()}
 
     cursor.execute("""
-        SELECT category, COUNT(*) as cnt 
-        FROM announcements 
-        GROUP BY category 
-        ORDER BY cnt DESC 
+        SELECT category, COUNT(*) as cnt
+        FROM announcements
+        GROUP BY category
+        ORDER BY cnt DESC
         LIMIT 15
     """)
     top_categories = {r['category']: r['cnt'] for r in cursor.fetchall()}
 
     cursor.execute("""
-        SELECT a.announcement_date, COUNT(*) as cnt 
-        FROM announcements a 
-        GROUP BY a.announcement_date 
-        ORDER BY a.announcement_date DESC 
-        LIMIT 30
+        SELECT insight_type, COUNT(*) as cnt
+        FROM announcement_insights
+        GROUP BY insight_type
+        ORDER BY cnt DESC
     """)
-    daily_counts = {r['announcement_date']: r['cnt'] for r in cursor.fetchall()}
+    insight_types = {r['insight_type']: r['cnt'] for r in cursor.fetchall()}
 
     cursor.execute("""
-        SELECT 
+        SELECT
+            SUM(has_guidance) as with_guidance,
+            SUM(has_capex_news) as with_capex,
+            SUM(has_order_news) as with_orders,
+            SUM(has_financial_results) as with_financials
+        FROM company_summary
+    """)
+    summary_stats = dict(cursor.fetchone())
+
+    cursor.execute("""
+        SELECT
             ROUND(AVG(market_cap)/1e7, 0) as avg_mcap,
             ROUND(AVG(pe_ratio), 2) as avg_pe,
             ROUND(AVG(roe)*100, 2) as avg_roe
@@ -409,9 +405,11 @@ def get_dashboard():
     return {
         "total_companies": total_companies,
         "total_announcements": total_announcements,
+        "total_insights": total_insights,
         "sector_distribution": sector_distribution,
         "top_categories": top_categories,
-        "daily_announcement_counts": daily_counts,
+        "insight_types": insight_types,
+        "summary_stats": summary_stats,
         "averages": averages,
     }
 
