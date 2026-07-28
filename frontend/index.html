@@ -336,7 +336,11 @@ function renderCompany(el) {
         html += '<button class="btn btn-primary" id="gen-summary-btn" onclick="generateSummary(' + c.id + ')">Generate Summary</button>';
         html += ' <button class="btn btn-secondary" id="gen-all-btn" onclick="generateAllAnn(' + c.id + ')" style="margin-left:.25rem">Analyze All Announcements</button>';
         html += '</div></div>';
-        html += '<div id="ai-summary-content" style="font-size:.8rem;color:#cbd5e1;line-height:1.6">Click "Generate Summary" to get an AI analysis synthesizing all announcement summaries with dates.</div>';
+        if (d.company_ai_summary && d.company_ai_summary.summary) {
+            html += '<div id="ai-summary-content">' + renderAiSummary(d.company_ai_summary.summary, d.company_ai_summary.announcements_used, d.company_ai_summary.generated_at) + '</div>';
+        } else {
+            html += '<div id="ai-summary-content" style="font-size:.8rem;color:#cbd5e1;line-height:1.6">Click "Generate Summary" to get an AI analysis synthesizing all announcement summaries with dates.</div>';
+        }
         html += '</div>';
 
         html += '<div class="card"><h3 style="margin-bottom:.5rem;font-size:.9rem">Recent Announcements</h3>';
@@ -420,6 +424,46 @@ function generateAllAnn(companyId) {
     });
 }
 
+function renderAiSummary(text, used, generatedAt) {
+    if (!text) return '';
+    var html = '';
+    if (used) html += '<div style="font-size:.7rem;color:#94a3b8;margin-bottom:.3rem">Based on ' + used + ' analyzed announcements</div>';
+    if (generatedAt) html += '<div style="font-size:.65rem;color:#64748b;margin-bottom:.5rem">Generated: ' + generatedAt + '</div>';
+
+    var sectionColors = {
+        'RECENT FILING NEWS': '#60a5fa',
+        'FUTURE OUTLOOK': '#34d399',
+        'KEY RED FLAGS': '#f87171',
+        'POSITIVE SIGNALS': '#fbbf24',
+        'COMPANY DESCRIPTION': '#a78bfa'
+    };
+
+    var lines = text.split('\n');
+    var currentSection = '';
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (line.indexOf('## ') === 0) {
+            currentSection = line.replace('## ', '').trim();
+            var col = sectionColors[currentSection] || '#60a5fa';
+            html += '<div style="font-weight:700;font-size:.85rem;margin-top:.75rem;margin-bottom:.35rem;color:' + col + ';border-bottom:1px solid ' + col + '33;padding-bottom:.25rem;display:flex;align-items:center;gap:.4rem">';
+            html += '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + col + '"></span>';
+            html += currentSection;
+            html += '</div>';
+        } else if (line.indexOf('[') === 0 && line.indexOf(']') > 0) {
+            var dateMatch = line.match(/\[([^\]]+)\]/);
+            var dateStr = dateMatch ? dateMatch[1] : '';
+            var rest = dateMatch ? line.substring(line.indexOf(']') + 1).trim() : line;
+            html += '<div style="margin-bottom:.25rem;font-size:.78rem;line-height:1.5">';
+            if (dateStr) html += '<span style="color:#fbbf24;font-weight:600">[' + dateStr + ']</span> ';
+            html += rest;
+            html += '</div>';
+        } else if (line.trim()) {
+            html += '<div style="margin-bottom:.2rem;font-size:.78rem;line-height:1.5">' + line + '</div>';
+        }
+    }
+    return html;
+}
+
 function generateSummary(companyId) {
     var btn = document.getElementById('gen-summary-btn');
     var content = document.getElementById('ai-summary-content');
@@ -428,19 +472,7 @@ function generateSummary(companyId) {
     content.innerHTML = '<div style="color:#60a5fa">Synthesizing all announcement summaries...</div>';
 
     api('/companies/' + companyId + '/ai_summary').then(function(d) {
-        var text = d.summary || 'No summary generated.';
-        var used = d.announcements_used || 0;
-        var html = '<div style="font-size:.7rem;color:#94a3b8;margin-bottom:.5rem">Based on ' + used + ' analyzed announcements</div>';
-        var lines = text.split('\n');
-        for (var i = 0; i < lines.length; i++) {
-            var line = lines[i];
-            if (line.indexOf('## ') === 0) {
-                html += '<div style="font-weight:700;font-size:.85rem;margin-top:.75rem;margin-bottom:.25rem;color:#60a5fa;border-bottom:1px solid #334155;padding-bottom:.25rem">' + line.replace('## ', '') + '</div>';
-            } else if (line.trim()) {
-                html += '<div style="margin-bottom:.2rem">' + line + '</div>';
-            }
-        }
-        content.innerHTML = html;
+        content.innerHTML = renderAiSummary(d.summary, d.announcements_used, null);
         btn.textContent = 'Regenerate';
         btn.disabled = false;
     }).catch(function(e) {

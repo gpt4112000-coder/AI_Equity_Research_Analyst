@@ -113,6 +113,15 @@ CREATE TABLE IF NOT EXISTS company_summary (
     FOREIGN KEY (company_id) REFERENCES companies(id)
 );
 
+CREATE TABLE IF NOT EXISTS company_ai_summary (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER UNIQUE,
+    summary TEXT NOT NULL,
+    announcements_used INTEGER DEFAULT 0,
+    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (company_id) REFERENCES companies(id)
+);
+
 CREATE TABLE IF NOT EXISTS price_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     company_id INTEGER,
