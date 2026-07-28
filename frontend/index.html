@@ -327,34 +327,23 @@ function renderCompany(el) {
         html += '<div class="card" id="ai-summary-card">';
         html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem">';
         html += '<h3 style="font-size:.9rem">AI Research Summary</h3>';
+        html += '<div>';
         html += '<button class="btn btn-primary" id="gen-summary-btn" onclick="generateSummary(' + c.id + ')">Generate Summary</button>';
-        html += '</div>';
-        html += '<div id="ai-summary-content" style="font-size:.8rem;color:#cbd5e1;line-height:1.6">Click "Generate Summary" to get an AI analysis of this company based on its announcements and filings.</div>';
+        html += ' <button class="btn btn-secondary" id="gen-all-btn" onclick="generateAllAnn(' + c.id + ')" style="margin-left:.25rem">Analyze All Announcements</button>';
+        html += '</div></div>';
+        html += '<div id="ai-summary-content" style="font-size:.8rem;color:#cbd5e1;line-height:1.6">Click "Generate Summary" to get an AI analysis synthesizing all announcement summaries with dates.</div>';
         html += '</div>';
 
         html += '<div class="card"><h3 style="margin-bottom:.5rem;font-size:.9rem">Recent Announcements</h3>';
+        html += '<div id="ann-list">';
         if (anns.length) {
             for (var i = 0; i < anns.length; i++) {
-                var a = anns[i];
-                html += '<div class="ann-item">';
-                html += '<div style="display:flex;justify-content:space-between;align-items:start">';
-                html += '<div style="font-weight:500">' + (a.headline || 'No title') + '</div>';
-                html += '<span class="muted" style="font-size:.65rem;white-space:nowrap;margin-left:.5rem">' + (a.announcement_date || '') + '</span>';
-                html += '</div>';
-                html += '<div class="muted" style="font-size:.7rem;margin-top:.15rem">' + (a.exchange || '') + ' | ' + (a.category || '') + '</div>';
-                if (a.ai_summary) {
-                    html += '<div style="margin-top:.35rem;padding:.5rem;background:#0f172a;border-radius:6px;border-left:3px solid #8b5cf6;font-size:.75rem;color:#c4b5fd;line-height:1.5">' + a.ai_summary + '</div>';
-                } else if (a.description) {
-                    var desc = a.description.substring(0, 200);
-                    if (a.description.length > 200) desc += '...';
-                    html += '<div style="font-size:.7rem;color:#64748b;margin-top:.15rem">' + desc + '</div>';
-                }
-                html += '</div>';
+                html += renderAnnouncement(anns[i]);
             }
         } else {
             html += '<div class="muted">No announcements</div>';
         }
-        html += '</div>';
+        html += '</div></div>';
 
         el.innerHTML = html;
     }).catch(function(e) {
@@ -362,29 +351,92 @@ function renderCompany(el) {
     });
 }
 
+function renderAnnouncement(a) {
+    var html = '<div class="ann-item" id="ann-' + a.id + '">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:start">';
+    html += '<div style="font-weight:500">' + (a.headline || 'No title') + '</div>';
+    html += '<span class="muted" style="font-size:.65rem;white-space:nowrap;margin-left:.5rem">' + (a.announcement_date || '') + '</span>';
+    html += '</div>';
+    html += '<div class="muted" style="font-size:.7rem;margin-top:.15rem">' + (a.exchange || '') + ' | ' + (a.category || '') + '</div>';
+
+    if (a.ai_summary) {
+        var s = typeof a.ai_summary === 'string' ? JSON.parse(a.ai_summary) : a.ai_summary;
+        var sentColor = s.sentiment === 'positive' ? '#34d399' : s.sentiment === 'negative' ? '#f87171' : '#60a5fa';
+        var sentLabel = s.sentiment || 'neutral';
+        var impColor = s.importance === 'high' ? '#fbbf24' : s.importance === 'low' ? '#64748b' : '#94a3b8';
+
+        html += '<div style="margin-top:.35rem;padding:.5rem;background:#0f172a;border-radius:6px;border-left:3px solid #8b5cf6;font-size:.75rem;color:#c4b5fd;line-height:1.5">';
+        html += '<div style="display:flex;gap:.5rem;margin-bottom:.3rem;flex-wrap:wrap">';
+        html += '<span style="color:' + sentColor + ';font-weight:600;font-size:.65rem">' + sentLabel.toUpperCase() + '</span>';
+        html += '<span style="color:' + impColor + ';font-size:.65rem">[' + (s.importance || 'medium').toUpperCase() + ']</span>';
+        if (s.categories) {
+            for (var j = 0; j < s.categories.length; j++) {
+                html += '<span class="sector-badge">' + s.categories[j] + '</span>';
+            }
+        }
+        html += '</div>';
+        html += '<div>' + (s.summary || '') + '</div>';
+        if (s.key_numbers && s.key_numbers.length) {
+            html += '<div style="margin-top:.3rem;color:#94a3b8;font-size:.7rem">Key numbers: ' + s.key_numbers.join('; ') + '</div>';
+        }
+        html += '</div>';
+    } else if (a.description) {
+        html += '<div style="font-size:.7rem;color:#64748b;margin-top:.15rem">' + a.description.substring(0, 200) + (a.description.length > 200 ? '...' : '') + '</div>';
+        html += '<button class="btn btn-secondary" style="margin-top:.3rem;font-size:.7rem;padding:.2rem .5rem" onclick="generateAnnSummary(' + a.id + ', ' + a.company_id + ')">Analyze with AI</button>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function generateAnnSummary(annId, companyId) {
+    var el = document.getElementById('ann-' + annId);
+    if (el) el.innerHTML = '<div style="padding:.5rem;color:#60a5fa">Analyzing with AI...</div>';
+
+    api('/announcements/' + annId + '/ai_summary', {method: 'POST'}).then(function(d) {
+        // Reload company page to show updated data
+        renderCompany(document.getElementById('app'));
+    }).catch(function(e) {
+        if (el) el.innerHTML = '<div style="padding:.5rem;color:#f87171">Error: ' + e.message + '</div>';
+    });
+}
+
+function generateAllAnn(companyId) {
+    var btn = document.getElementById('gen-all-btn');
+    btn.disabled = true;
+    btn.textContent = 'Analyzing...';
+
+    api('/companies/' + companyId + '/generate_summaries', {method: 'POST'}).then(function(d) {
+        btn.textContent = 'Done (' + d.generated + ' analyzed)';
+        btn.disabled = false;
+        renderCompany(document.getElementById('app'));
+    }).catch(function(e) {
+        btn.textContent = 'Error: ' + e.message;
+        btn.disabled = false;
+    });
+}
+
 function generateSummary(companyId) {
     var btn = document.getElementById('gen-summary-btn');
     var content = document.getElementById('ai-summary-content');
     btn.disabled = true;
-    btn.textContent = 'Generating... (may take 30-60s)';
-    content.innerHTML = '<div style="color:#60a5fa">Analyzing announcements and filings with AI...</div>';
+    btn.textContent = 'Generating...';
+    content.innerHTML = '<div style="color:#60a5fa">Synthesizing all announcement summaries...</div>';
 
     api('/companies/' + companyId + '/ai_summary').then(function(d) {
         var text = d.summary || 'No summary generated.';
-        var html = '';
+        var used = d.announcements_used || 0;
+        var html = '<div style="font-size:.7rem;color:#94a3b8;margin-bottom:.5rem">Based on ' + used + ' analyzed announcements</div>';
         var lines = text.split('\n');
         for (var i = 0; i < lines.length; i++) {
             var line = lines[i];
             if (line.indexOf('## ') === 0) {
                 html += '<div style="font-weight:700;font-size:.85rem;margin-top:.75rem;margin-bottom:.25rem;color:#60a5fa;border-bottom:1px solid #334155;padding-bottom:.25rem">' + line.replace('## ', '') + '</div>';
-            } else if (line.indexOf('**') === 0) {
-                html += '<div style="font-weight:600;margin-top:.3rem">' + line.replace(/\*\*/g, '') + '</div>';
             } else if (line.trim()) {
                 html += '<div style="margin-bottom:.2rem">' + line + '</div>';
             }
         }
         content.innerHTML = html;
-        btn.textContent = 'Regenerate Summary';
+        btn.textContent = 'Regenerate';
         btn.disabled = false;
     }).catch(function(e) {
         content.innerHTML = '<div style="color:#f87171">Error: ' + e.message + '</div>';

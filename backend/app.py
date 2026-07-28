@@ -7,6 +7,7 @@ from typing import Optional
 from pathlib import Path
 import json
 import httpx
+import uvicorn
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
@@ -276,8 +277,114 @@ def get_stats():
     }
 
 
+@app.post("/api/announcements/{ann_id}/ai_summary")
+def generate_announcement_summary(ann_id: int):
+    """Generate and store AI summary for a single announcement."""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT a.*, c.company_name, c.nse_symbol, c.bse_code, c.sector, c.industry
+        FROM announcements a JOIN companies c ON a.company_id = c.id
+        WHERE a.id = ?
+    """, (ann_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Announcement not found")
+
+    row = dict(row)
+
+    # If already has valid summary, return it
+    if row.get("ai_summary") and row["ai_summary"].strip():
+        try:
+            parsed = json.loads(row["ai_summary"])
+            conn.close()
+            return {"ann_id": ann_id, "summary": parsed}
+        except json.JSONDecodeError:
+            pass  # Fall through to regenerate
+
+    prompt = f"""Analyze this Indian stock market filing and extract structured insights.
+
+Company: {row['company_name']} ({row['nse_symbol'] or row['bse_code'] or 'N/A'})
+Sector: {row['sector'] or 'N/A'} | Exchange: {row['exchange'] or 'N/A'}
+Date: {row['announcement_date'] or 'Unknown'}
+Category: {row['category'] or 'N/A'}
+Title: {row['headline'] or ''}
+Details: {(row['description'] or '')[:600]}
+
+Respond in EXACTLY this JSON format (no other text):
+{{
+  "date": "{row['announcement_date'] or ''}",
+  "headline": "{(row['headline'] or '')[:100]}",
+  "summary": "2-3 sentence factual summary with specific numbers, dates, amounts",
+  "categories": ["guidance" or "capex" or "orders" or "financials" or "dividend" or "acquisition" or "management" or "regulatory" or "general"],
+  "sentiment": "positive" or "negative" or "neutral",
+  "key_numbers": ["list of specific amounts, percentages, dates mentioned"],
+  "importance": "high" or "medium" or "low"
+}}"""
+
+    try:
+        response = httpx.post(
+            "http://localhost:11434/api/generate",
+            json={"model": "qwen2.5:3b", "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.2, "num_predict": 300}},
+            timeout=90.0
+        )
+        raw = response.json().get("response", "")
+        # Extract JSON from response
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start >= 0 and end > start:
+            summary = json.loads(raw[start:end])
+        else:
+            summary = {"summary": raw.strip(), "categories": ["general"], "sentiment": "neutral", "key_numbers": [], "importance": "medium", "date": row['announcement_date'] or '', "headline": (row['headline'] or '')[:100]}
+
+        # Ensure required fields
+        summary.setdefault("date", row['announcement_date'] or '')
+        summary.setdefault("headline", (row['headline'] or '')[:100])
+        summary.setdefault("summary", raw.strip()[:300])
+        summary.setdefault("categories", ["general"])
+        summary.setdefault("sentiment", "neutral")
+        summary.setdefault("key_numbers", [])
+        summary.setdefault("importance", "medium")
+    except Exception as e:
+        summary = {"summary": f"Error: {str(e)[:100]}", "categories": ["general"], "sentiment": "neutral", "key_numbers": [], "importance": "low", "date": row['announcement_date'] or '', "headline": (row['headline'] or '')[:100]}
+
+    cursor.execute("UPDATE announcements SET ai_summary = ? WHERE id = ?", (json.dumps(summary), ann_id))
+    conn.commit()
+    conn.close()
+
+    return {"ann_id": ann_id, "summary": summary}
+
+
+@app.post("/api/companies/{company_id}/generate_summaries")
+def generate_missing_summaries(company_id: int):
+    """Generate AI summaries for all announcements of a company that don't have one yet."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id FROM announcements
+        WHERE company_id = ? AND (ai_summary IS NULL OR ai_summary = '')
+        ORDER BY announcement_date DESC LIMIT 20
+    """, (company_id,))
+    ids = [r["id"] for r in cursor.fetchall()]
+    conn.close()
+
+    results = []
+    for ann_id in ids:
+        try:
+            r = generate_announcement_summary(ann_id)
+            results.append(r)
+        except Exception:
+            pass
+
+    return {"company_id": company_id, "generated": len(results), "results": results}
+
+
 @app.get("/api/companies/{company_id}/ai_summary")
 def generate_ai_summary(company_id: int):
+    """Generate company-level AI research summary from all stored per-announcement summaries."""
     conn = get_db()
     cursor = conn.cursor()
 
@@ -287,80 +394,80 @@ def generate_ai_summary(company_id: int):
         conn.close()
         raise HTTPException(status_code=404, detail="Company not found")
 
+    # Get announcements WITH ai_summary (stored structured data)
     cursor.execute("""
-        SELECT headline, description, category, exchange, announcement_date
-        FROM announcements WHERE company_id = ?
-        ORDER BY announcement_date DESC LIMIT 50
+        SELECT ai_summary, announcement_date, category, headline, exchange
+        FROM announcements WHERE company_id = ? AND ai_summary IS NOT NULL AND ai_summary != ''
+        ORDER BY announcement_date DESC
     """, (company_id,))
-    announcements = [dict(r) for r in cursor.fetchall()]
-
-    cursor.execute("""
-        SELECT insight_type, sentiment, summary, amount, period
-        FROM announcement_insights WHERE company_id = ?
-        ORDER BY extracted_at DESC LIMIT 50
-    """, (company_id,))
-    insights = [dict(r) for r in cursor.fetchall()]
+    rows = [dict(r) for r in cursor.fetchall()]
 
     conn.close()
 
+    if not rows:
+        return {"summary": "No AI summaries generated yet for this company's announcements. Click company to generate per-announcement summaries first.", "company_id": company_id}
+
+    # Build context from stored summaries
     ann_text = ""
-    for a in announcements:
-        ann_text += f"- [{a['exchange']}] {a['announcement_date'] or 'No date'} | {a['category'] or ''}: {a['headline'] or ''}. {(a['description'] or '')[:300]}\n"
+    for r in rows:
+        try:
+            s = json.loads(r["ai_summary"])
+            cats = ", ".join(s.get("categories", []))
+            sentiment = s.get("sentiment", "neutral")
+            key_nums = "; ".join(s.get("key_numbers", [])[:3])
+            ann_text += f"- [{r['announcement_date']}] ({r['exchange']}) {r['category']}: {s.get('headline', r['headline'] or '')}\n"
+            ann_text += f"  Summary: {s.get('summary', '')}\n"
+            ann_text += f"  Categories: {cats} | Sentiment: {sentiment} | Key numbers: {key_nums}\n\n"
+        except Exception:
+            continue
 
-    insight_text = ""
-    for i in insights:
-        amt = f" (₹{i['amount']:.0f} Cr)" if i.get('amount') else ""
-        per = f" [{i['period']}]" if i.get('period') else ""
-        insight_text += f"- {i['insight_type']} | {i['sentiment']}{amt}{per}: {i['summary'] or ''}\n"
+    prompt = f"""You are an equity research analyst. Synthesize the following per-announcement summaries for an Indian small-cap company into a structured research report.
 
-    prompt = f"""You are an equity research analyst. Analyze the following Indian small-cap company and generate a structured research summary.
+Company: {dict(company)['company_name']}
+NSE: {dict(company)['nse_symbol'] or 'N/A'} | BSE: {dict(company)['bse_code'] or 'N/A'}
+Sector: {dict(company)['sector'] or 'N/A'} | Industry: {dict(company)['industry'] or 'N/A'}
+Market Cap: Rs.{dict(company)['market_cap'] / 1e7:.0f} Cr
 
-Company: {company['company_name']}
-NSE: {company['nse_symbol'] or 'N/A'} | BSE: {company['bse_code'] or 'N/A'}
-Sector: {company['sector'] or 'N/A'} | Industry: {company['industry'] or 'N/A'}
-Market Cap: ₹{company['market_cap'] / 1e7:.0f} Cr (if available)
-
-ANNOUNCEMENTS (recent filings):
+PER-ANNOUNCEMENT SUMMARIES (chronological):
 {ann_text}
 
-EXTRACTED INSIGHTS:
-{insight_text}
-
-Generate a structured summary with these EXACT sections (use ## for headers):
+Generate a structured summary with these EXACT sections (use ## for headers). Include dates in brackets:
 
 ## RECENT FILING NEWS
-Summarize the 2-3 most important recent announcements. Be specific with numbers, dates, and details.
+Summarize the 3-5 most important announcements with specific dates, numbers, amounts. Format: [Date] description.
 
 ## FUTURE OUTLOOK
-Based on order book, capex plans, guidance, and recent activity, what is the company's near-term outlook? Include specific numbers where available.
+Based on all announcements, what is the company's near-term outlook? Include order book, capex plans, guidance with dates and numbers.
 
 ## KEY RED FLAGS
-List any concerns: governance issues, declining financials, management changes, rising debt, etc. Be specific. If none found, say "No significant red flags identified in recent filings."
+List concerns with dates. If none, say "No significant red flags."
+
+## POSITIVE SIGNALS
+List positive developments with dates.
 
 ## COMPANY DESCRIPTION
-1-2 sentence description of what the company does.
+1-2 sentence description.
 
-Keep the total response under 400 words. Be factual, not speculative. Use Indian financial conventions (Cr for crores, FY for financial year)."""
+Keep total under 500 words. Be factual. Use Indian conventions (Cr, FY)."""
 
     try:
         response = httpx.post(
             "http://localhost:11434/api/generate",
-            json={
-                "model": "qwen2.5:3b",
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.3, "num_predict": 800}
-            },
+            json={"model": "qwen2.5:3b", "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.3, "num_predict": 800}},
             timeout=120.0
         )
-        result = response.json()
-        summary = result.get("response", "")
+        summary = response.json().get("response", "")
     except Exception as e:
-        summary = f"Error generating summary: {str(e)}"
+        summary = f"Error: {str(e)}"
 
-    return {"summary": summary, "company_id": company_id}
+    return {"summary": summary, "company_id": company_id, "announcements_used": len(rows)}
 
 
 @app.get("/")
 def serve_frontend():
     return FileResponse(str(FRONTEND_DIR / "index.html"))
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8001)
