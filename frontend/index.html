@@ -324,6 +324,14 @@ function renderCompany(el) {
 
         html += '</div>';
 
+        html += '<div class="card" id="ai-summary-card">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem">';
+        html += '<h3 style="font-size:.9rem">AI Research Summary</h3>';
+        html += '<button class="btn btn-primary" id="gen-summary-btn" onclick="generateSummary(' + c.id + ')">Generate Summary</button>';
+        html += '</div>';
+        html += '<div id="ai-summary-content" style="font-size:.8rem;color:#cbd5e1;line-height:1.6">Click "Generate Summary" to get an AI analysis of this company based on its announcements and filings.</div>';
+        html += '</div>';
+
         html += '<div class="card"><h3 style="margin-bottom:.5rem;font-size:.9rem">Recent Announcements</h3>';
         if (anns.length) {
             for (var i = 0; i < anns.length; i++) {
@@ -349,6 +357,37 @@ function renderCompany(el) {
         el.innerHTML = html;
     }).catch(function(e) {
         el.innerHTML = '<div class="card">Error: ' + e.message + '</div>';
+    });
+}
+
+function generateSummary(companyId) {
+    var btn = document.getElementById('gen-summary-btn');
+    var content = document.getElementById('ai-summary-content');
+    btn.disabled = true;
+    btn.textContent = 'Generating... (may take 30-60s)';
+    content.innerHTML = '<div style="color:#60a5fa">Analyzing announcements and filings with AI...</div>';
+
+    api('/companies/' + companyId + '/ai_summary').then(function(d) {
+        var text = d.summary || 'No summary generated.';
+        var html = '';
+        var lines = text.split('\n');
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (line.indexOf('## ') === 0) {
+                html += '<div style="font-weight:700;font-size:.85rem;margin-top:.75rem;margin-bottom:.25rem;color:#60a5fa;border-bottom:1px solid #334155;padding-bottom:.25rem">' + line.replace('## ', '') + '</div>';
+            } else if (line.indexOf('**') === 0) {
+                html += '<div style="font-weight:600;margin-top:.3rem">' + line.replace(/\*\*/g, '') + '</div>';
+            } else if (line.trim()) {
+                html += '<div style="margin-bottom:.2rem">' + line + '</div>';
+            }
+        }
+        content.innerHTML = html;
+        btn.textContent = 'Regenerate Summary';
+        btn.disabled = false;
+    }).catch(function(e) {
+        content.innerHTML = '<div style="color:#f87171">Error: ' + e.message + '</div>';
+        btn.textContent = 'Generate Summary';
+        btn.disabled = false;
     });
 }
 
