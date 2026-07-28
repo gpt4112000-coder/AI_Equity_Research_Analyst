@@ -49,13 +49,16 @@ def parse_bse_date(dt_str):
 
 
 def parse_nse_date(dt_str):
-    """Parse NSE datetime string like '04-Aug-2025 22:40:55'."""
+    """Parse NSE datetime string. Handles both '2025-08-04 22:40:55' and '04-Aug-2025 22:40:55'."""
     if not dt_str:
         return None
     try:
-        return datetime.strptime(dt_str, "%d-%b-%Y %H:%M:%S").isoformat()
+        return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").isoformat()
     except Exception:
-        return None
+        try:
+            return datetime.strptime(dt_str, "%d-%b-%Y %H:%M:%S").isoformat()
+        except Exception:
+            return None
 
 
 def parse_nse_dt(dt_str):
