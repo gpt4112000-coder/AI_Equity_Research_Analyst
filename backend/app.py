@@ -212,7 +212,7 @@ def get_company(company_id: int):
 
     # Get recent announcements
     cursor.execute("""
-        SELECT id, exchange, category, headline, description, announcement_date
+        SELECT id, exchange, category, headline, description, announcement_date, ai_summary
         FROM announcements WHERE company_id = ?
         ORDER BY announcement_date DESC LIMIT 20
     """, (company_id,))
