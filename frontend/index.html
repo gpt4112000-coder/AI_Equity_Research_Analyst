@@ -151,7 +151,11 @@ function filterByInsight(type) {
 function renderCompanies(el) {
     el.innerHTML = '<div class="empty">Loading...</div>';
 
-    Promise.all([api('/sectors'), api('/companies?limit=100&offset=' + state.offset)]).then(function(results) {
+    var url = '/companies?limit=100&offset=' + state.offset;
+    if (state.sector) url += '&sector=' + encodeURIComponent(state.sector);
+    if (state.search) url += '&search=' + encodeURIComponent(state.search);
+
+    Promise.all([api('/sectors'), api(url)]).then(function(results) {
         var sectors = results[0].sectors || {};
         var data = results[1];
         var companies = data.companies;
@@ -263,6 +267,62 @@ function renderCompany(el) {
             }
             html += '</div></div>';
         }
+
+        var totalSent = (c.sentiment_positive || 0) + (c.sentiment_negative || 0) + (c.sentiment_neutral || 0);
+        var themes = c.key_themes || [];
+
+        html += '<div class="card"><h3 style="margin-bottom:.75rem;font-size:.9rem">Company Summary</h3>';
+
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">';
+
+        html += '<div>';
+        html += '<div style="font-weight:600;font-size:.8rem;margin-bottom:.5rem">Sentiment Overview</div>';
+        if (totalSent > 0) {
+            var posW = ((c.sentiment_positive || 0) / totalSent * 100).toFixed(0);
+            var negW = ((c.sentiment_negative || 0) / totalSent * 100).toFixed(0);
+            var neuW = ((c.sentiment_neutral || 0) / totalSent * 100).toFixed(0);
+            html += '<div style="display:flex;border-radius:9999px;overflow:hidden;height:10px;margin-bottom:.4rem">';
+            html += '<div style="width:' + posW + '%;background:#34d399"></div>';
+            html += '<div style="width:' + neuW + '%;background:#60a5fa"></div>';
+            html += '<div style="width:' + negW + '%;background:#f87171"></div>';
+            html += '</div>';
+            html += '<div style="display:flex;gap:.75rem;font-size:.7rem">';
+            html += '<span style="color:#34d399">Positive ' + (c.sentiment_positive || 0) + '</span>';
+            html += '<span style="color:#60a5fa">Neutral ' + (c.sentiment_neutral || 0) + '</span>';
+            html += '<span style="color:#f87171">Negative ' + (c.sentiment_negative || 0) + '</span>';
+            html += '</div>';
+        } else {
+            html += '<div class="muted" style="font-size:.75rem">No sentiment data</div>';
+        }
+        html += '</div>';
+
+        html += '<div>';
+        html += '<div style="font-weight:600;font-size:.8rem;margin-bottom:.5rem">Key Themes</div>';
+        if (themes.length) {
+            html += '<div style="display:flex;flex-wrap:wrap;gap:.3rem">';
+            for (var t = 0; t < themes.length; t++) {
+                html += '<span class="sector-badge">' + themes[t].replace(/_/g, ' ') + '</span>';
+            }
+            html += '</div>';
+        } else {
+            html += '<div class="muted" style="font-size:.75rem">No themes identified</div>';
+        }
+        html += '</div>';
+
+        html += '</div>';
+
+        html += '<div style="margin-top:1rem">';
+        html += '<div style="font-weight:600;font-size:.8rem;margin-bottom:.5rem">Quick Facts</div>';
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.5rem">';
+        html += '<div style="background:#0f172a;border-radius:6px;padding:.5rem .75rem"><div class="muted" style="font-size:.65rem">Total Announcements</div><div style="font-size:.9rem;font-weight:600">' + (c.total_announcements || 0) + '</div></div>';
+        html += '<div style="background:#0f172a;border-radius:6px;padding:.5rem .75rem"><div class="muted" style="font-size:.65rem">Guidance Given</div><div style="font-size:.9rem;font-weight:600">' + (c.has_guidance ? 'Yes' : 'No') + '</div></div>';
+        html += '<div style="background:#0f172a;border-radius:6px;padding:.5rem .75rem"><div class="muted" style="font-size:.65rem">Order Activity</div><div style="font-size:.9rem;font-weight:600">' + (c.has_orders ? 'Yes' : 'No') + '</div></div>';
+        html += '<div style="background:#0f172a;border-radius:6px;padding:.5rem .75rem"><div class="muted" style="font-size:.65rem">Capex Plans</div><div style="font-size:.9rem;font-weight:600">' + (c.has_capex ? 'Yes' : 'No') + '</div></div>';
+        html += '<div style="background:#0f172a;border-radius:6px;padding:.5rem .75rem"><div class="muted" style="font-size:.65rem">Dividend</div><div style="font-size:.9rem;font-weight:600">' + (c.has_dividend ? 'Yes' : 'No') + '</div></div>';
+        html += '<div style="background:#0f172a;border-radius:6px;padding:.5rem .75rem"><div class="muted" style="font-size:.65rem">Financial Results</div><div style="font-size:.9rem;font-weight:600">' + (c.has_financials ? 'Yes' : 'No') + '</div></div>';
+        html += '</div></div>';
+
+        html += '</div>';
 
         html += '<div class="card"><h3 style="margin-bottom:.5rem;font-size:.9rem">Recent Announcements</h3>';
         if (anns.length) {
