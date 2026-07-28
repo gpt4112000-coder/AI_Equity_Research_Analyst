@@ -230,6 +230,11 @@ def get_company(company_id: int):
     }
 
 
+@app.get("/api/dashboard")
+def get_dashboard():
+    return get_stats()
+
+
 @app.get("/api/stats")
 def get_stats():
     conn = get_db()
