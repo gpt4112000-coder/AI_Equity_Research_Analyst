@@ -230,10 +230,22 @@ def get_company(company_id: int):
 
     conn.close()
 
+    # Get stored company-level AI summary
+    conn2 = get_db()
+    cursor2 = conn2.cursor()
+    cursor2.execute("SELECT summary, announcements_used, generated_at FROM company_ai_summary WHERE company_id = ?", (company_id,))
+    stored_summary = cursor2.fetchone()
+    conn2.close()
+
     return {
         "company": company,
         "announcements": announcements,
         "insight_summary": insight_summary,
+        "company_ai_summary": {
+            "summary": stored_summary["summary"] if stored_summary else None,
+            "announcements_used": stored_summary["announcements_used"] if stored_summary else 0,
+            "generated_at": stored_summary["generated_at"] if stored_summary else None,
+        } if stored_summary else None,
     }
 
 
@@ -460,6 +472,16 @@ Keep total under 500 words. Be factual. Use Indian conventions (Cr, FY)."""
         summary = response.json().get("response", "")
     except Exception as e:
         summary = f"Error: {str(e)}"
+
+    # Save to database
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO company_ai_summary (company_id, summary, announcements_used, generated_at)
+        VALUES (?, ?, ?, datetime('now'))
+    """, (company_id, summary, len(rows)))
+    conn.commit()
+    conn.close()
 
     return {"summary": summary, "company_id": company_id, "announcements_used": len(rows)}
 
