@@ -1,0 +1,27 @@
+{
+  "name": "AI Equity Research",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "forwardPorts": [3000, 8001],
+  "postCreateCommand": "pip install -r requirements.txt && cd backend && python -c 'from data.storage.db import init_db; init_db()'",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      }
+    }
+  },
+  "portsAttributes": {
+    "3000": {
+      "label": "Frontend",
+      "onAutoForward": "openBrowser"
+    },
+    "8001": {
+      "label": "Backend API",
+      "onAutoForward": "openBrowser"
+    }
+  }
+}
