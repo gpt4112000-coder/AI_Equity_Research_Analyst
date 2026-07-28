@@ -4,263 +4,296 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Equity Research - Small Cap India</title>
-    <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0}
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+        .container{max-width:1400px;margin:0 auto;padding:1rem}
+        nav{background:#1e293b;border-bottom:1px solid #334155;padding:.75rem 1rem;position:sticky;top:0;z-index:10}
+        nav .inner{max-width:1400px;margin:0 auto;display:flex;align-items:center;justify-content:space-between}
+        .logo{font-size:1.1rem;font-weight:700;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+        .btn{padding:.45rem .9rem;border-radius:8px;cursor:pointer;border:none;font-weight:500;font-size:.8rem;transition:all .15s}
+        .btn-primary{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff}
+        .btn-secondary{background:#334155;color:#e2e8f0}
+        .btn-secondary:hover{background:#475569}
         .card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;margin-bottom:.75rem}
-        .grad{background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-        .btn{padding:.4rem .8rem;border-radius:8px;cursor:pointer;border:none;font-weight:500;font-size:.8rem}
-        .btn-p{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff}
-        .btn-s{background:#334155;color:#e2e8f0}
-        .btn-a{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff}
-        .chip{display:inline-block;padding:.35rem .75rem;border-radius:9999px;margin:.15rem;cursor:pointer;background:#1e293b;border:1px solid #334155;color:#94a3b8;font-size:.75rem}
+        .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1.5rem}
+        .stat-card .label{color:#94a3b8;font-size:.75rem}
+        .stat-card .value{font-size:1.75rem;font-weight:700;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+        .filters{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:1rem}
+        .chip{padding:.35rem .75rem;border-radius:9999px;cursor:pointer;background:#1e293b;border:1px solid #334155;color:#94a3b8;font-size:.75rem;transition:all .15s}
         .chip:hover{border-color:#60a5fa;color:#fff}
-        .chip.a{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;border-color:transparent}
-        input,select{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:.4rem .75rem;color:#e2e8f0;font-size:.8rem}
-        input:focus,select:focus{outline:none;border-color:#3b82f6}
+        .chip.active{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;border-color:transparent}
+        input[type=text]{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:.5rem .75rem;color:#e2e8f0;font-size:.85rem;width:300px}
+        input:focus{outline:none;border-color:#3b82f6}
         table{width:100%;border-collapse:collapse}
-        th,td{padding:.5rem;text-align:left;border-bottom:1px solid #334155;font-size:.8rem}
-        th{color:#94a3b8;font-weight:500}
+        th{text-align:left;padding:.6rem .5rem;color:#94a3b8;font-weight:500;font-size:.8rem;border-bottom:2px solid #334155}
+        td{padding:.6rem .5rem;border-bottom:1px solid #1e293b;font-size:.8rem}
+        tr{cursor:pointer;transition:background .1s}
         tr:hover{background:#1e293b}
-        .fade{animation:fadeIn .3s ease-in}
-        @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-        .g2{display:grid;grid-template-columns:repeat(2,1fr);gap:.75rem}
-        .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem}
-        .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem}
-        @media(max-width:768px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
-        .tag{display:inline-block;padding:.15rem .5rem;border-radius:4px;font-size:.65rem;font-weight:600}
-        .tag-pos{background:#064e3b;color:#34d399}
-        .tag-neg{background:#7f1d1d;color:#fca5a5}
-        .tag-neu{background:#1e3a5f;color:#60a5fa}
+        .tag{display:inline-block;padding:.15rem .45rem;border-radius:4px;font-size:.65rem;font-weight:600;margin-right:.15rem}
+        .tag-g{background:#4c1d95;color:#c4b5fd}
+        .tag-o{background:#78350f;color:#fbbf24}
+        .tag-c{background:#164e63;color:#67e8f9}
+        .tag-d{background:#713f12;color:#fde68a}
+        .tag-f{background:#065f46;color:#6ee7b7}
+        .sector-badge{font-size:.65rem;padding:.15rem .4rem;border-radius:4px;background:#1e3a5f;color:#60a5fa}
+        .muted{color:#94a3b8}
+        .detail-header{display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:1rem}
+        .detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin:1rem 0}
+        .insight-bar{display:flex;align-items:center;margin-bottom:.4rem}
+        .insight-bar .bar{flex:1;margin:0 .5rem;background:#334155;border-radius:9999px;height:5px}
+        .insight-bar .fill{background:#8b5cf6;height:5px;border-radius:9999px}
+        .back-btn{margin-bottom:1rem}
+        .empty{text-align:center;padding:3rem;color:#64748b}
+        .search-row{display:flex;gap:.5rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap}
+        .pagination{display:flex;justify-content:center;align-items:center;gap:.75rem;margin-top:1rem}
+        .pagination span{color:#94a3b8;font-size:.8rem}
+        .ann-item{padding:.6rem 0;border-bottom:1px solid #334155}
+        .ann-item:last-child{border-bottom:none}
     </style>
 </head>
 <body>
-<div id="app">
-    <nav style="border-bottom:1px solid #334155;padding:.75rem 1.25rem">
-        <div style="max-width:1400px;margin:0 auto;display:flex;align-items:center;justify-content:space-between">
-            <div style="font-size:1.1rem;font-weight:700" class="grad">AI Equity Research - Small Cap India</div>
-            <div id="nav"></div>
+    <nav>
+        <div class="inner">
+            <div class="logo">AI Equity Research - Small Cap India</div>
+            <div id="nav-buttons"></div>
         </div>
     </nav>
-    <main style="max-width:1400px;margin:0 auto;padding:1.25rem" id="content"></main>
-</div>
+    <div class="container" id="app"></div>
 
 <script>
-const API='/api';
-let S={page:'dashboard',sector:null,companyId:null,filters:{}};
+var API = '/api';
+var state = { page: 'dashboard', sector: null, companyId: null, search: '', offset: 0 };
 
-async function api(e){const r=await fetch(`${API}${e}`);if(!r.ok)throw new Error(r.status);return r.json()}
-
-function nav(){
-    const p=['dashboard','companies'];
-    document.getElementById('nav').innerHTML=p.map(x=>
-        `<button class="btn ${S.page===x?'btn-a':'btn-s'}" onclick="go('${x}')" style="margin-left:.5rem">${x[0].toUpperCase()+x.slice(1)}</button>`
-    ).join('');
+function api(path) {
+    return fetch(API + path).then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    });
 }
 
-function go(page,o={}){S={...S,...o};nav();render()}
-
-function render(){
-    const el=document.getElementById('content');
-    if(S.page==='dashboard')rDash(el);
-    else if(S.page==='companies')rCompanies(el);
-    else if(S.page==='company')rCompany(el);
+function navigate(page, opts) {
+    state.page = page;
+    if (opts) {
+        if (opts.sector !== undefined) state.sector = opts.sector;
+        if (opts.companyId !== undefined) state.companyId = opts.companyId;
+        if (opts.offset !== undefined) state.offset = opts.offset;
+    }
+    renderNav();
+    render();
 }
 
-function fmt(n){return n?(n).toFixed(0)+' Cr':'-'}
-function fmtShort(n){if(!n)return'-';if(n>=1e7)return(n/1e7).toFixed(1)+' Cr';if(n>=1e5)return(n/1e5).toFixed(1)+' L';return n.toFixed(0)}
-
-async function rDash(el){
-    el.innerHTML='<div style="text-align:center;padding:4rem;color:#64748b">Loading...</div>';
-    try{
-        const d=await api('/stats');
-        el.innerHTML=`<div class="fade">
-            <div class="g4" style="margin-bottom:1rem">
-                <div class="card"><div style="color:#94a3b8;font-size:.75rem">Companies</div><div style="font-size:1.75rem;font-weight:700" class="grad">${d.total_companies}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.75rem">Announcements</div><div style="font-size:1.75rem;font-weight:700" class="grad">${d.total_announcements.toLocaleString()}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.75rem">Insights</div><div style="font-size:1.75rem;font-weight:700" class="grad">${d.total_insights.toLocaleString()}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.75rem">Active Companies</div><div style="font-size:1.75rem;font-weight:700" class="grad">${d.companies_with_announcements}</div></div>
-            </div>
-            <div class="g2">
-                <div class="card">
-                    <h3 style="font-size:.9rem;font-weight:600;margin-bottom:.75rem">By Exchange</h3>
-                    ${Object.entries(d.by_exchange||{}).map(([k,v])=>`
-                        <div style="display:flex;align-items:center;margin-bottom:.4rem">
-                            <span style="width:60px;font-size:.75rem;text-transform:uppercase">${k}</span>
-                            <div style="flex:1;margin:0 .5rem;background:#334155;border-radius:9999px;height:5px">
-                                <div style="background:#8b5cf6;height:5px;border-radius:9999px;width:${(v/d.total_announcements)*100}%"></div>
-                            </div>
-                            <span style="font-size:.7rem;color:#94a3b8">${v.toLocaleString()}</span>
-                        </div>
-                    `).join('')}
-                </div>
-                <div class="card">
-                    <h3 style="font-size:.9rem;font-weight:600;margin-bottom:.75rem">Insight Types</h3>
-                    ${Object.entries(d.by_insight_type||{}).filter(([k])=>k!=='general').map(([k,v])=>`
-                        <div style="display:flex;align-items:center;margin-bottom:.4rem;cursor:pointer" onclick="go('companies',{insightFilter:'${k}'})">
-                            <span style="width:100px;font-size:.7rem;text-transform:capitalize">${k.replace(/_/g,' ')}</span>
-                            <div style="flex:1;margin:0 .5rem;background:#334155;border-radius:9999px;height:5px">
-                                <div style="background:#8b5cf6;height:5px;border-radius:9999px;width:${(v/d.total_insights)*100}%"></div>
-                            </div>
-                            <span style="font-size:.7rem;color:#94a3b8">${v.toLocaleString()}</span>
-                        </div>
-                    `).join('')}
-                </div>
-            </div>
-            <div style="margin-top:1rem;text-align:center">
-                <button class="btn btn-p" onclick="go('companies')" style="padding:.6rem 1.5rem;font-size:.9rem">Browse Companies</button>
-            </div>
-        </div>`;
-    }catch(e){el.innerHTML=`<div class="card">Error: ${e.message}</div>`}
+function renderNav() {
+    var pages = ['dashboard', 'companies'];
+    var html = '';
+    for (var i = 0; i < pages.length; i++) {
+        var p = pages[i];
+        var cls = state.page === p ? 'btn btn-primary' : 'btn btn-secondary';
+        html += '<button class="' + cls + '" onclick="navigate(\'' + p + '\')" style="margin-left:.5rem">' + p.charAt(0).toUpperCase() + p.slice(1) + '</button>';
+    }
+    document.getElementById('nav-buttons').innerHTML = html;
 }
 
-async function rCompanies(el){
-    el.innerHTML='<div style="text-align:center;padding:4rem;color:#64748b">Loading...</div>';
-    try{
-        const[sectors]=await Promise.all([api('/sectors')]);
-        const params=new URLSearchParams();
-        if(S.sector)params.set('sector',S.sector);
-        if(S.search)params.set('search',S.search);
-        if(S.insightFilter){
-            const map={guidance:'has_guidance',capex:'has_capex',order:'has_orders',dividend:'has_dividend',financial:'has_financials'};
-            if(map[S.insightFilter])params.set(map[S.insightFilter],'1');
+function render() {
+    var app = document.getElementById('app');
+    if (state.page === 'dashboard') renderDashboard(app);
+    else if (state.page === 'companies') renderCompanies(app);
+    else if (state.page === 'company') renderCompany(app);
+}
+
+function renderDashboard(el) {
+    el.innerHTML = '<div class="empty">Loading...</div>';
+    api('/stats').then(function(d) {
+        var html = '<div class="stats-grid">';
+        html += '<div class="card stat-card"><div class="label">Companies</div><div class="value">' + d.total_companies + '</div></div>';
+        html += '<div class="card stat-card"><div class="label">Announcements</div><div class="value">' + d.total_announcements.toLocaleString() + '</div></div>';
+        html += '<div class="card stat-card"><div class="label">Insights</div><div class="value">' + d.total_insights.toLocaleString() + '</div></div>';
+        html += '<div class="card stat-card"><div class="label">Active Companies</div><div class="value">' + d.companies_with_announcements + '</div></div>';
+        html += '</div>';
+
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">';
+        html += '<div class="card"><h3 style="margin-bottom:.75rem;font-size:.9rem">By Exchange</h3>';
+        var ex = d.by_exchange || {};
+        for (var k in ex) {
+            html += '<div class="insight-bar"><span style="width:60px;font-size:.75rem;text-transform:uppercase">' + k + '</span>';
+            html += '<div class="bar"><div class="fill" style="width:' + (ex[k] / d.total_announcements * 100) + '%"></div></div>';
+            html += '<span style="font-size:.7rem" class="muted">' + ex[k].toLocaleString() + '</span></div>';
         }
-        params.set('limit','100');
-        if(S.offset)params.set('offset',String(S.offset));
-        const d=await api(`/companies?${params}`);
+        html += '</div>';
 
-        el.innerHTML=`<div class="fade">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
-                <div>
-                    <input type="text" placeholder="Search company or symbol..." value="${S.search||''}"
-                        onkeyup="if(event.key==='Enter'){S.search=this.value;S.offset=0;rCompanies(document.getElementById('content'))}"
-                        style="width:280px">
-                    <button class="btn btn-s" onclick="S.search=document.querySelector('input').value;S.offset=0;rCompanies(document.getElementById('content'))" style="margin-left:.25rem">Search</button>
-                </div>
-                <div style="color:#94a3b8;font-size:.8rem">${d.total.toLocaleString()} companies</div>
-            </div>
-            <div style="margin-bottom:1rem;display:flex;flex-wrap:wrap;gap:.25rem">
-                <span class="chip ${!S.sector?'a':''}" onclick="S.sector=null;S.offset=0;rCompanies(document.getElementById('content'))">All</span>
-                ${Object.entries(sectors.sectors||{}).map(([k,v])=>
-                    `<span class="chip ${S.sector===k?'a':''}" onclick="S.sector='${k}';S.offset=0;rCompanies(document.getElementById('content'))">${k.replace(/_/g,' ')} (${v})</span>`
-                ).join('')}
-            </div>
-            <div style="overflow-x:auto">
-                <table>
-                    <thead>
-                        <tr>
-                            <th onclick="sort('company')" style="cursor:pointer">Company</th>
-                            <th onclick="sort('market_cap')" style="cursor:pointer">MCap</th>
-                            <th>Sector</th>
-                            <th>Exch</th>
-                            <th onclick="sort('announcements')" style="cursor:pointer">Anns</th>
-                            <th>Insights</th>
-                            <th>Latest</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${d.companies.map(c=>`<tr onclick="go('company',{companyId:${c.id}})" style="cursor:pointer">
-                            <td>
-                                <div style="font-weight:600;font-size:.85rem">${c.company_name}</div>
-                                <div style="font-size:.7rem;color:#94a3b8">${c.nse_symbol||c.bse_code||''}</div>
-                            </td>
-                            <td style="font-size:.75rem">₹${fmt(c.market_cap_cr)}</td>
-                            <td><span style="font-size:.65rem;padding:.15rem .4rem;border-radius:4px;background:#1e3a5f;color:#60a5fa">${(c.sector||'other').replace(/_/g,' ')}</span></td>
-                            <td style="font-size:.7rem">${c.nse_symbol?'NSE':''}${c.nse_symbol&&c.bse_code?'/':''}${c.bse_code?'BSE':''}</td>
-                            <td style="font-size:.75rem">${c.total_announcements}</td>
-                            <td style="font-size:.7rem">
-                                ${c.has_guidance?'<span class="tag tag-guide">G</span>':''}
-                                ${c.has_orders?'<span class="tag" style="background:#78350f;color:#fbbf24">O</span>':''}
-                                ${c.has_capex?'<span class="tag" style="background:#164e63;color:#67e8f9">C</span>':''}
-                                ${c.has_dividend?'<span class="tag" style="background:#713f12;color:#fde68a">D</span>':''}
-                                ${c.has_financials?'<span class="tag" style="background:#065f46;color:#6ee7b7">F</span>':''}
-                            </td>
-                            <td style="font-size:.7rem;color:#94a3b8">${c.latest_announcement||'-'}</td>
-                        </tr>`).join('')}
-                    </tbody>
-                </table>
-            </div>
-            ${d.total>100?`<div style="display:flex;justify-content:center;gap:.5rem;margin-top:1rem">
-                <button class="btn btn-s" onclick="S.offset=Math.max(0,(S.offset||0)-100);rCompanies(document.getElementById('content'))" ${!S.offset?'disabled':''}>Prev</button>
-                <span style="color:#94a3b8;font-size:.8rem;line-height:2">Page ${Math.floor((S.offset||0)/100)+1} of ${Math.ceil(d.total/100)}</span>
-                <button class="btn btn-s" onclick="S.offset=(S.offset||0)+100;rCompanies(document.getElementById('content'))" ${(S.offset||0)+100>=d.total?'disabled':''}>Next</button>
-            </div>`:''}
-        </div>`;
-    }catch(e){el.innerHTML=`<div class="card">Error: ${e.message}</div>`}
+        html += '<div class="card"><h3 style="margin-bottom:.75rem;font-size:.9rem">Insight Types</h3>';
+        var it = d.by_insight_type || {};
+        for (var k in it) {
+            if (k === 'general') continue;
+            html += '<div class="insight-bar" style="cursor:pointer" onclick="navigate(\'companies\',{sector:null,search:\'\'});setTimeout(function(){filterByInsight(\'' + k + '\')},100)">';
+            html += '<span style="width:100px;font-size:.7rem;text-transform:capitalize">' + k.replace(/_/g, ' ') + '</span>';
+            html += '<div class="bar"><div class="fill" style="width:' + (it[k] / d.total_insights * 100) + '%"></div></div>';
+            html += '<span style="font-size:.7rem" class="muted">' + it[k].toLocaleString() + '</span></div>';
+        }
+        html += '</div></div>';
+
+        html += '<div style="text-align:center;margin-top:1.5rem"><button class="btn btn-primary" onclick="navigate(\'companies\')" style="padding:.6rem 2rem;font-size:.95rem">Browse Companies</button></div>';
+
+        el.innerHTML = html;
+    }).catch(function(e) {
+        el.innerHTML = '<div class="card">Error loading dashboard: ' + e.message + '</div>';
+    });
 }
 
-function sort(col){
-    if(S.sortBy===col)S.sortOrder=S.sortOrder==='desc'?'asc':'desc';
-    else{S.sortBy=col;S.sortOrder='desc'}
-    rCompanies(document.getElementById('content'));
+function filterByInsight(type) {
+    var map = {guidance: 'has_guidance', capex: 'has_capex', order: 'has_orders', dividend: 'has_dividend', financial: 'has_financials'};
+    if (map[type]) {
+        var url = '/companies?' + map[type] + '=1&limit=100';
+        renderCompanyList(document.getElementById('app'), url);
+    }
 }
 
-async function rCompany(el){
-    el.innerHTML='<div style="text-align:center;padding:4rem;color:#64748b">Loading...</div>';
-    try{
-        const d=await api(`/companies/${S.companyId}`);
-        const c=d.company;
-        const anns=d.announcements;
-        const ins=d.insight_summary;
+function renderCompanies(el) {
+    el.innerHTML = '<div class="empty">Loading...</div>';
 
-        el.innerHTML=`<div class="fade">
-            <button class="btn btn-s" onclick="go('companies')" style="margin-bottom:1rem">Back to List</button>
-            <div class="card">
-                <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:1rem">
-                    <div>
-                        <h2 style="font-size:1.25rem;font-weight:700">${c.company_name}</h2>
-                        <div style="color:#94a3b8;font-size:.8rem;margin-top:.25rem">
-                            ${c.nse_symbol?`NSE: ${c.nse_symbol}`:''}
-                            ${c.nse_symbol&&c.bse_code?' | ':''}
-                            ${c.bse_code?`BSE: ${c.bse_code}`:''}
-                            ${c.group_name?` | Group: ${c.group_name}`:''}
-                        </div>
-                    </div>
-                    <div style="text-align:right">
-                        <div style="font-size:1.5rem;font-weight:700" class="grad">₹${fmt(c.market_cap_cr)}</div>
-                        <div style="font-size:.75rem;color:#94a3b8">${c.sector||''} | ${c.industry||''}</div>
-                    </div>
-                </div>
-            </div>
-            <div class="g4" style="margin-bottom:1rem">
-                <div class="card"><div style="color:#94a3b8;font-size:.7rem">Announcements</div><div style="font-size:1.25rem;font-weight:700">${c.total_announcements}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.7rem">Guidance</div><div style="font-size:1.25rem;font-weight:700">${c.has_guidance?'Yes':'No'}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.7rem">Orders</div><div style="font-size:1.25rem;font-weight:700">${c.has_orders?'Yes':'No'}</div></div>
-                <div class="card"><div style="color:#94a3b8;font-size:.7rem">Capex</div><div style="font-size:1.25rem;font-weight:700">${c.has_capex?'Yes':'No'}</div></div>
-            </div>
-            ${(c.guidance_text||c.order_text||c.capex_text||c.dividend_text||c.financial_text)?`<div class="card">
-                <h3 style="font-size:.9rem;font-weight:600;margin-bottom:.5rem">Key Insights</h3>
-                ${c.guidance_text?`<div style="margin-bottom:.4rem"><span class="tag tag-guide">Guidance</span> <span style="font-size:.75rem">${c.guidance_text}</span></div>`:''}
-                ${c.order_text?`<div style="margin-bottom:.4rem"><span class="tag" style="background:#78350f;color:#fbbf24">Orders</span> <span style="font-size:.75rem">${c.order_text}</span></div>`:''}
-                ${c.capex_text?`<div style="margin-bottom:.4rem"><span class="tag" style="background:#164e63;color:#67e8f9">Capex</span> <span style="font-size:.75rem">${c.capex_text}</span></div>`:''}
-                ${c.dividend_text?`<div style="margin-bottom:.4rem"><span class="tag" style="background:#713f12;color:#fde68a">Dividend</span> <span style="font-size:.75rem">${c.dividend_text}</span></div>`:''}
-                ${c.financial_text?`<div style="margin-bottom:.4rem"><span class="tag" style="background:#065f46;color:#6ee7b7">Financial</span> <span style="font-size:.75rem">${c.financial_text}</span></div>`:''}
-            </div>`:''}
-            ${ins.length?`<div class="card">
-                <h3 style="font-size:.9rem;font-weight:600;margin-bottom:.5rem">Insight Breakdown</h3>
-                <div style="display:flex;flex-wrap:wrap;gap:.5rem">
-                    ${ins.map(i=>`<div style="background:#0f172a;border-radius:8px;padding:.5rem .75rem">
-                        <div style="font-size:.7rem;color:#94a3b8;text-transform:capitalize">${i.insight_type.replace(/_/g,' ')}</div>
-                        <div style="font-size:1rem;font-weight:600">${i.cnt}</div>
-                    </div>`).join('')}
-                </div>
-            </div>`:''}
-            <div class="card">
-                <h3 style="font-size:.9rem;font-weight:600;margin-bottom:.5rem">Recent Announcements</h3>
-                ${anns.length?anns.map(a=>`<div style="padding:.5rem 0;border-bottom:1px solid #334155">
-                    <div style="display:flex;justify-content:space-between;align-items:start">
-                        <div style="font-size:.8rem;font-weight:500">${a.headline||'No title'}</div>
-                        <span style="font-size:.65rem;color:#94a3b8;white-space:nowrap;margin-left:.5rem">${a.announcement_date||''}</span>
-                    </div>
-                    <div style="font-size:.7rem;color:#94a3b8;margin-top:.2rem">${a.exchange} | ${a.category||''}</div>
-                    ${a.description?`<div style="font-size:.7rem;color:#64748b;margin-top:.2rem">${a.description.substring(0,200)}${a.description.length>200?'...':''}</div>`:''}
-                </div>`).join(''):'<div style="color:#64748b;font-size:.8rem">No announcements</div>'}
-            </div>
-        </div>`;
-    }catch(e){el.innerHTML=`<div class="card">Error: ${e.message}</div>`}
+    Promise.all([api('/sectors'), api('/companies?limit=100&offset=' + state.offset)]).then(function(results) {
+        var sectors = results[0].sectors || {};
+        var data = results[1];
+        var companies = data.companies;
+        var total = data.total;
+
+        var html = '';
+
+        html += '<div class="search-row">';
+        html += '<input type="text" id="search-box" placeholder="Search company or symbol..." value="' + (state.search || '') + '" onkeyup="if(event.key===\'Enter\'){state.search=this.value;state.offset=0;renderCompanies(document.getElementById(\'app\'))}">';
+        html += '<button class="btn btn-secondary" onclick="state.search=document.getElementById(\'search-box\').value;state.offset=0;renderCompanies(document.getElementById(\'app\'))">Search</button>';
+        html += '<span class="muted" style="margin-left:auto">' + total.toLocaleString() + ' companies</span>';
+        html += '</div>';
+
+        html += '<div class="filters">';
+        html += '<span class="chip' + (!state.sector ? ' active' : '') + '" onclick="state.sector=null;state.offset=0;renderCompanies(document.getElementById(\'app\'))">All</span>';
+        for (var s in sectors) {
+            html += '<span class="chip' + (state.sector === s ? ' active' : '') + '" onclick="state.sector=\'' + s + '\';state.offset=0;renderCompanies(document.getElementById(\'app\'))">' + s.replace(/_/g, ' ') + ' (' + sectors[s] + ')</span>';
+        }
+        html += '</div>';
+
+        html += '<div class="card" style="padding:.5rem;overflow-x:auto"><table><thead><tr>';
+        html += '<th>Company</th><th>MCap</th><th>Sector</th><th>Exch</th><th>Anns</th><th>Insights</th><th>Latest</th>';
+        html += '</tr></thead><tbody>';
+
+        for (var i = 0; i < companies.length; i++) {
+            var c = companies[i];
+            var sym = c.nse_symbol || c.bse_code || '';
+            var exch = '';
+            if (c.nse_symbol && c.bse_code) exch = 'NSE/BSE';
+            else if (c.nse_symbol) exch = 'NSE';
+            else if (c.bse_code) exch = 'BSE';
+
+            html += '<tr onclick="navigate(\'company\',{companyId:' + c.id + '})">';
+            html += '<td><div style="font-weight:600">' + (c.company_name || '') + '</div><div class="muted" style="font-size:.7rem">' + sym + '</div></td>';
+            html += '<td>₹' + (c.market_cap_cr ? c.market_cap_cr.toFixed(0) : '-') + ' Cr</td>';
+            html += '<td><span class="sector-badge">' + (c.sector || 'other').replace(/_/g, ' ') + '</span></td>';
+            html += '<td>' + exch + '</td>';
+            html += '<td>' + (c.total_announcements || 0) + '</td>';
+            html += '<td>';
+            if (c.has_guidance) html += '<span class="tag tag-g">G</span>';
+            if (c.has_orders) html += '<span class="tag tag-o">O</span>';
+            if (c.has_capex) html += '<span class="tag tag-c">C</span>';
+            if (c.has_dividend) html += '<span class="tag tag-d">D</span>';
+            if (c.has_financials) html += '<span class="tag tag-f">F</span>';
+            html += '</td>';
+            html += '<td class="muted">' + (c.latest_announcement || '-') + '</td>';
+            html += '</tr>';
+        }
+
+        html += '</tbody></table></div>';
+
+        if (total > 100) {
+            html += '<div class="pagination">';
+            html += '<button class="btn btn-secondary" onclick="state.offset=Math.max(0,state.offset-100);renderCompanies(document.getElementById(\'app\'))"' + (state.offset <= 0 ? ' disabled' : '') + '>Prev</button>';
+            html += '<span>Page ' + (Math.floor(state.offset / 100) + 1) + ' of ' + Math.ceil(total / 100) + '</span>';
+            html += '<button class="btn btn-secondary" onclick="state.offset=state.offset+100;renderCompanies(document.getElementById(\'app\'))"' + (state.offset + 100 >= total ? ' disabled' : '') + '>Next</button>';
+            html += '</div>';
+        }
+
+        el.innerHTML = html;
+    }).catch(function(e) {
+        el.innerHTML = '<div class="card">Error: ' + e.message + '</div>';
+    });
 }
 
-nav();render();
+function renderCompany(el) {
+    el.innerHTML = '<div class="empty">Loading...</div>';
+
+    api('/companies/' + state.companyId).then(function(d) {
+        var c = d.company;
+        var anns = d.announcements || [];
+        var ins = d.insight_summary || [];
+
+        var html = '<button class="btn btn-secondary back-btn" onclick="navigate(\'companies\')">Back to List</button>';
+
+        html += '<div class="card"><div class="detail-header"><div>';
+        html += '<h2 style="font-size:1.25rem;font-weight:700">' + (c.company_name || '') + '</h2>';
+        html += '<div class="muted" style="font-size:.8rem;margin-top:.25rem">';
+        if (c.nse_symbol) html += 'NSE: ' + c.nse_symbol;
+        if (c.nse_symbol && c.bse_code) html += ' | ';
+        if (c.bse_code) html += 'BSE: ' + c.bse_code;
+        if (c.group_name) html += ' | Group: ' + c.group_name;
+        html += '</div></div><div style="text-align:right">';
+        html += '<div style="font-size:1.5rem;font-weight:700;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent">₹' + (c.market_cap_cr ? c.market_cap_cr.toFixed(0) : '0') + ' Cr</div>';
+        html += '<div class="muted" style="font-size:.75rem">' + (c.sector || '') + ' | ' + (c.industry || '') + '</div>';
+        html += '</div></div></div>';
+
+        html += '<div class="detail-grid">';
+        html += '<div class="card stat-card"><div class="label">Announcements</div><div class="value" style="font-size:1.25rem">' + (c.total_announcements || 0) + '</div></div>';
+        html += '<div class="card stat-card"><div class="label">Guidance</div><div class="value" style="font-size:1.25rem">' + (c.has_guidance ? 'Yes' : 'No') + '</div></div>';
+        html += '<div class="card stat-card"><div class="label">Orders</div><div class="value" style="font-size:1.25rem">' + (c.has_orders ? 'Yes' : 'No') + '</div></div>';
+        html += '<div class="card stat-card"><div class="label">Capex</div><div class="value" style="font-size:1.25rem">' + (c.has_capex ? 'Yes' : 'No') + '</div></div>';
+        html += '</div>';
+
+        if (c.guidance_text || c.order_text || c.capex_text || c.dividend_text || c.financial_text) {
+            html += '<div class="card"><h3 style="margin-bottom:.5rem;font-size:.9rem">Key Insights</h3>';
+            if (c.guidance_text) html += '<div style="margin-bottom:.3rem"><span class="tag tag-g">Guidance</span> <span style="font-size:.75rem">' + c.guidance_text + '</span></div>';
+            if (c.order_text) html += '<div style="margin-bottom:.3rem"><span class="tag tag-o">Orders</span> <span style="font-size:.75rem">' + c.order_text + '</span></div>';
+            if (c.capex_text) html += '<div style="margin-bottom:.3rem"><span class="tag tag-c">Capex</span> <span style="font-size:.75rem">' + c.capex_text + '</span></div>';
+            if (c.dividend_text) html += '<div style="margin-bottom:.3rem"><span class="tag tag-d">Dividend</span> <span style="font-size:.75rem">' + c.dividend_text + '</span></div>';
+            if (c.financial_text) html += '<div style="margin-bottom:.3rem"><span class="tag tag-f">Financial</span> <span style="font-size:.75rem">' + c.financial_text + '</span></div>';
+            html += '</div>';
+        }
+
+        if (ins.length) {
+            html += '<div class="card"><h3 style="margin-bottom:.5rem;font-size:.9rem">Insight Breakdown</h3><div style="display:flex;flex-wrap:wrap;gap:.5rem">';
+            for (var i = 0; i < ins.length; i++) {
+                html += '<div style="background:#0f172a;border-radius:8px;padding:.5rem .75rem"><div class="muted" style="font-size:.7rem;text-transform:capitalize">' + ins[i].insight_type.replace(/_/g, ' ') + '</div><div style="font-size:1rem;font-weight:600">' + ins[i].cnt + '</div></div>';
+            }
+            html += '</div></div>';
+        }
+
+        html += '<div class="card"><h3 style="margin-bottom:.5rem;font-size:.9rem">Recent Announcements</h3>';
+        if (anns.length) {
+            for (var i = 0; i < anns.length; i++) {
+                var a = anns[i];
+                html += '<div class="ann-item">';
+                html += '<div style="display:flex;justify-content:space-between;align-items:start">';
+                html += '<div style="font-weight:500">' + (a.headline || 'No title') + '</div>';
+                html += '<span class="muted" style="font-size:.65rem;white-space:nowrap;margin-left:.5rem">' + (a.announcement_date || '') + '</span>';
+                html += '</div>';
+                html += '<div class="muted" style="font-size:.7rem;margin-top:.15rem">' + (a.exchange || '') + ' | ' + (a.category || '') + '</div>';
+                if (a.description) {
+                    var desc = a.description.substring(0, 200);
+                    if (a.description.length > 200) desc += '...';
+                    html += '<div style="font-size:.7rem;color:#64748b;margin-top:.15rem">' + desc + '</div>';
+                }
+                html += '</div>';
+            }
+        } else {
+            html += '<div class="muted">No announcements</div>';
+        }
+        html += '</div>';
+
+        el.innerHTML = html;
+    }).catch(function(e) {
+        el.innerHTML = '<div class="card">Error: ' + e.message + '</div>';
+    });
+}
+
+renderNav();
+render();
 </script>
 </body>
 </html>
