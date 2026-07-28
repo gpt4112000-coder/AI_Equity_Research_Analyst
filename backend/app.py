@@ -6,6 +6,7 @@ from data.storage.db import get_db, init_db
 from typing import Optional
 from pathlib import Path
 import json
+import httpx
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
@@ -273,6 +274,91 @@ def get_stats():
         "by_exchange": by_exchange,
         "by_insight_type": by_type,
     }
+
+
+@app.get("/api/companies/{company_id}/ai_summary")
+def generate_ai_summary(company_id: int):
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM companies WHERE id = ?", (company_id,))
+    company = cursor.fetchone()
+    if not company:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    cursor.execute("""
+        SELECT headline, description, category, exchange, announcement_date
+        FROM announcements WHERE company_id = ?
+        ORDER BY announcement_date DESC LIMIT 50
+    """, (company_id,))
+    announcements = [dict(r) for r in cursor.fetchall()]
+
+    cursor.execute("""
+        SELECT insight_type, sentiment, summary, amount, period
+        FROM announcement_insights WHERE company_id = ?
+        ORDER BY extracted_at DESC LIMIT 50
+    """, (company_id,))
+    insights = [dict(r) for r in cursor.fetchall()]
+
+    conn.close()
+
+    ann_text = ""
+    for a in announcements:
+        ann_text += f"- [{a['exchange']}] {a['announcement_date'] or 'No date'} | {a['category'] or ''}: {a['headline'] or ''}. {(a['description'] or '')[:300]}\n"
+
+    insight_text = ""
+    for i in insights:
+        amt = f" (₹{i['amount']:.0f} Cr)" if i.get('amount') else ""
+        per = f" [{i['period']}]" if i.get('period') else ""
+        insight_text += f"- {i['insight_type']} | {i['sentiment']}{amt}{per}: {i['summary'] or ''}\n"
+
+    prompt = f"""You are an equity research analyst. Analyze the following Indian small-cap company and generate a structured research summary.
+
+Company: {company['company_name']}
+NSE: {company['nse_symbol'] or 'N/A'} | BSE: {company['bse_code'] or 'N/A'}
+Sector: {company['sector'] or 'N/A'} | Industry: {company['industry'] or 'N/A'}
+Market Cap: ₹{company['market_cap'] / 1e7:.0f} Cr (if available)
+
+ANNOUNCEMENTS (recent filings):
+{ann_text}
+
+EXTRACTED INSIGHTS:
+{insight_text}
+
+Generate a structured summary with these EXACT sections (use ## for headers):
+
+## RECENT FILING NEWS
+Summarize the 2-3 most important recent announcements. Be specific with numbers, dates, and details.
+
+## FUTURE OUTLOOK
+Based on order book, capex plans, guidance, and recent activity, what is the company's near-term outlook? Include specific numbers where available.
+
+## KEY RED FLAGS
+List any concerns: governance issues, declining financials, management changes, rising debt, etc. Be specific. If none found, say "No significant red flags identified in recent filings."
+
+## COMPANY DESCRIPTION
+1-2 sentence description of what the company does.
+
+Keep the total response under 400 words. Be factual, not speculative. Use Indian financial conventions (Cr for crores, FY for financial year)."""
+
+    try:
+        response = httpx.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "qwen2.5:3b",
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.3, "num_predict": 800}
+            },
+            timeout=120.0
+        )
+        result = response.json()
+        summary = result.get("response", "")
+    except Exception as e:
+        summary = f"Error generating summary: {str(e)}"
+
+    return {"summary": summary, "company_id": company_id}
 
 
 @app.get("/")
