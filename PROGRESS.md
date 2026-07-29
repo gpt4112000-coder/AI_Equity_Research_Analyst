@@ -3,7 +3,7 @@
 **Last Updated:** 2026-07-29 18:30 IST
 **Current Version:** v4.1.0 (FastAPI + Filters)
 **GitHub:** https://github.com/gpt4112000-coder/AI_Equity_Research_Analyst
-**Latest Commit:** TBD
+**Latest Commit:** 06e5c30
 
 ---
 
@@ -271,9 +271,7 @@ http://localhost:8001
 ## Git History (Recent)
 
 ```
-TBD - feat: add advanced filters (insight type, sort, date range, sentiment, amount)
-TBD - feat: add fetch stock feature with NSE/BSE fallback
-TBD - feat: add live stock info and sentiment timeline
+06e5c30 - feat: add fetch stock feature and advanced filters
 a428e32 - feat: store company AI summary in DB, show immediately on load with colored sections
 271cb1d - fix: api() function now supports POST method for AI summary endpoints
 265fab8 - fix: correct route decorators, add per-announcement AI analysis UI
