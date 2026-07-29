@@ -6,6 +6,7 @@ from data.storage.db import get_db, init_db
 from typing import Optional
 from pathlib import Path
 import json
+import re
 import httpx
 import uvicorn
 
@@ -49,6 +50,11 @@ def list_companies(
     has_financials: int = None,
     insight_type: str = None,
     search: str = None,
+    from_date: str = None,
+    to_date: str = None,
+    sentiment: str = None,
+    min_amount: float = None,
+    max_amount: float = None,
     sort_by: str = "market_cap",
     sort_order: str = "desc",
     limit: int = Query(50, le=500),
@@ -102,6 +108,33 @@ def list_companies(
     if search:
         query += " AND (c.company_name LIKE ? OR c.nse_symbol LIKE ? OR c.bse_code LIKE ?)"
         params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+    if from_date or to_date:
+        # Use announcements table for date range filtering (has all historical dates)
+        date_subquery = "SELECT DISTINCT company_id FROM announcements WHERE 1=1"
+        date_params = []
+        if from_date:
+            date_subquery += " AND announcement_date >= ?"
+            date_params.append(from_date)
+        if to_date:
+            date_subquery += " AND announcement_date <= ?"
+            date_params.append(to_date)
+        query += f" AND c.id IN ({date_subquery})"
+        params.extend(date_params)
+    if sentiment == "positive":
+        query += " AND cs.sentiment_positive > cs.sentiment_negative AND cs.sentiment_positive > cs.sentiment_neutral"
+    elif sentiment == "negative":
+        query += " AND cs.sentiment_negative > cs.sentiment_positive AND cs.sentiment_negative > cs.sentiment_neutral"
+    elif sentiment == "neutral":
+        query += " AND cs.sentiment_neutral >= cs.sentiment_positive AND cs.sentiment_neutral >= cs.sentiment_negative"
+    if min_amount is not None or max_amount is not None:
+        query += " AND c.id IN (SELECT company_id FROM announcement_insights WHERE 1=1"
+        if min_amount is not None:
+            query += " AND amount >= ?"
+            params.append(min_amount)
+        if max_amount is not None:
+            query += " AND amount <= ?"
+            params.append(max_amount)
+        query += " GROUP BY company_id HAVING COUNT(*) > 0)"
 
     # Sorting
     sort_map = {
@@ -109,17 +142,36 @@ def list_companies(
         "announcements": "cs.total_announcements",
         "company": "c.company_name",
         "latest": "cs.latest_announcement_date",
+        "sentiment": "(COALESCE(cs.sentiment_positive,0) - COALESCE(cs.sentiment_negative,0)) * 1.0 / MAX(COALESCE(cs.sentiment_positive,0) + COALESCE(cs.sentiment_negative,0) + COALESCE(cs.sentiment_neutral,0), 1)",
     }
+    # For insight-specific sorts, add a subquery SELECT column
+    insight_sort_map = {
+        "guidance_count": "guidance_count",
+        "order_count": "order_count",
+        "capex_count": "capex_count",
+    }
+    if sort_by in insight_sort_map:
+        # Add subquery counts to SELECT and use them for ORDER BY
+        ai_table = f"(SELECT company_id, COUNT(*) as cnt FROM announcement_insights WHERE insight_type = '{sort_by.replace('_count','')}' GROUP BY company_id) ai_{sort_by.replace('_count','')}"
+        query = query.replace("LEFT JOIN company_summary cs ON c.id = cs.company_id",
+                              f"LEFT JOIN company_summary cs ON c.id = cs.company_id LEFT JOIN {ai_table} ON ai_{sort_by.replace('_count','')}.company_id = c.id")
+        query = query.replace("SELECT c.id,", f"SELECT c.id, COALESCE(ai_{sort_by.replace('_count','')}.cnt, 0) as {sort_by},")
+        sort_map[sort_by] = sort_by
     sort_col = sort_map.get(sort_by, "c.market_cap")
     sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
     query += f" ORDER BY {sort_col} {sort_dir} NULLS LAST"
 
-    # Count
-    count_query = query.replace(
-        "SELECT c.id, c.bse_code, c.nse_symbol, c.company_name, c.sector, c.industry,\n               c.market_cap, c.group_name, c.isin,\n               cs.total_announcements, cs.has_guidance, cs.guidance_text,\n               cs.has_capex_news, cs.capex_text, cs.has_order_news, cs.order_text,\n               cs.has_financial_results, cs.financial_results_text,\n               cs.has_dividend_news, cs.dividend_text,\n               cs.sentiment_positive, cs.sentiment_negative, cs.sentiment_neutral,\n               cs.key_themes, cs.latest_announcement_date",
-        "SELECT COUNT(*)"
-    )
-    cursor.execute(count_query, params)
+    # Count - extract FROM...WHERE...ORDER BY from the main query
+    from_match = re.search(r'(FROM\s+companies\s+c.*)', query, re.DOTALL | re.IGNORECASE)
+    if from_match:
+        count_query = "SELECT COUNT(*) " + from_match.group(1)
+        # Remove ORDER BY and any added columns from count
+        count_query = re.sub(r'\s+ORDER\s+BY.*$', '', count_query, flags=re.DOTALL | re.IGNORECASE)
+        count_query = re.sub(r'\s+LIMIT\s+.*$', '', count_query, flags=re.DOTALL | re.IGNORECASE)
+        cursor.execute(count_query, params)
+    else:
+        # Fallback: use simple count
+        cursor.execute("SELECT COUNT(*) FROM companies c LEFT JOIN company_summary cs ON c.id = cs.company_id WHERE c.is_active = 1", params)
     total = cursor.fetchone()[0]
 
     query += " LIMIT ? OFFSET ?"
@@ -372,15 +424,22 @@ Respond in EXACTLY this JSON format (no other text):
 
 @app.post("/api/companies/{company_id}/generate_summaries")
 def generate_missing_summaries(company_id: int):
-    """Generate AI summaries for all announcements of a company that don't have one yet."""
+    """Generate AI summaries for announcements that don't have one yet. Skips existing."""
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id FROM announcements
         WHERE company_id = ? AND (ai_summary IS NULL OR ai_summary = '')
-        ORDER BY announcement_date DESC LIMIT 20
+        ORDER BY announcement_date DESC
     """, (company_id,))
     ids = [r["id"] for r in cursor.fetchall()]
+
+    # Also count how many already have summaries
+    cursor.execute("""
+        SELECT COUNT(*) FROM announcements
+        WHERE company_id = ? AND ai_summary IS NOT NULL AND ai_summary != ''
+    """, (company_id,))
+    already_done = cursor.fetchone()[0]
     conn.close()
 
     results = []
@@ -391,12 +450,18 @@ def generate_missing_summaries(company_id: int):
         except Exception:
             pass
 
-    return {"company_id": company_id, "generated": len(results), "results": results}
+    return {
+        "company_id": company_id,
+        "generated": len(results),
+        "already_done": already_done,
+        "remaining": len(ids) - len(results),
+        "results": results,
+    }
 
 
 @app.get("/api/companies/{company_id}/ai_summary")
 def generate_ai_summary(company_id: int):
-    """Generate company-level AI research summary from all stored per-announcement summaries."""
+    """Generate or update company-level AI summary. Only processes new announcements."""
     conn = get_db()
     cursor = conn.cursor()
 
@@ -406,22 +471,30 @@ def generate_ai_summary(company_id: int):
         conn.close()
         raise HTTPException(status_code=404, detail="Company not found")
 
-    # Get announcements WITH ai_summary (stored structured data)
+    # Get ALL announcements WITH ai_summary
     cursor.execute("""
-        SELECT ai_summary, announcement_date, category, headline, exchange
+        SELECT id, ai_summary, announcement_date, category, headline, exchange
         FROM announcements WHERE company_id = ? AND ai_summary IS NOT NULL AND ai_summary != ''
         ORDER BY announcement_date DESC
     """, (company_id,))
-    rows = [dict(r) for r in cursor.fetchall()]
+    all_rows = [dict(r) for r in cursor.fetchall()]
 
+    if not all_rows:
+        conn.close()
+        return {"summary": "No AI summaries generated yet. Click 'Analyze All Announcements' first.", "company_id": company_id, "announcements_used": 0}
+
+    # Check existing summary
+    cursor.execute("SELECT summary, announcements_used FROM company_ai_summary WHERE company_id = ?", (company_id,))
+    existing = cursor.fetchone()
     conn.close()
 
-    if not rows:
-        return {"summary": "No AI summaries generated yet for this company's announcements. Click company to generate per-announcement summaries first.", "company_id": company_id}
+    # If summary exists and all announcements are already included, return it
+    if existing and existing["announcements_used"] >= len(all_rows):
+        return {"summary": existing["summary"], "company_id": company_id, "announcements_used": existing["announcements_used"]}
 
-    # Build context from stored summaries
+    # Build context from ALL announcement summaries
     ann_text = ""
-    for r in rows:
+    for r in all_rows:
         try:
             s = json.loads(r["ai_summary"])
             cats = ", ".join(s.get("categories", []))
@@ -433,12 +506,23 @@ def generate_ai_summary(company_id: int):
         except Exception:
             continue
 
-    prompt = f"""You are an equity research analyst. Synthesize the following per-announcement summaries for an Indian small-cap company into a structured research report.
+    # If existing summary, add context about it
+    existing_context = ""
+    if existing and existing["summary"]:
+        existing_context = f"""
+
+EXISTING SUMMARY (already generated from {existing['announcements_used']} announcements):
+{existing['summary']}
+
+Update the above summary with any NEW information from the announcements below. Keep existing sections that are still valid. Only add/update what's new. Do not repeat information."""
+
+    prompt = f"""You are an equity research analyst. Synthesize per-announcement summaries for an Indian small-cap company into a structured research report.
 
 Company: {dict(company)['company_name']}
 NSE: {dict(company)['nse_symbol'] or 'N/A'} | BSE: {dict(company)['bse_code'] or 'N/A'}
 Sector: {dict(company)['sector'] or 'N/A'} | Industry: {dict(company)['industry'] or 'N/A'}
-Market Cap: Rs.{dict(company)['market_cap'] / 1e7:.0f} Cr
+Market Cap: Rs.{(dict(company)['market_cap'] or 0) / 1e7:.0f} Cr
+{existing_context}
 
 PER-ANNOUNCEMENT SUMMARIES (chronological):
 {ann_text}
@@ -479,16 +563,125 @@ Keep total under 500 words. Be factual. Use Indian conventions (Cr, FY)."""
     cursor.execute("""
         INSERT OR REPLACE INTO company_ai_summary (company_id, summary, announcements_used, generated_at)
         VALUES (?, ?, ?, datetime('now'))
-    """, (company_id, summary, len(rows)))
+    """, (company_id, summary, len(all_rows)))
     conn.commit()
     conn.close()
 
-    return {"summary": summary, "company_id": company_id, "announcements_used": len(rows)}
+    return {"summary": summary, "company_id": company_id, "announcements_used": len(all_rows)}
+
+
+@app.get("/api/sentiment-timeline/{company_id}")
+def get_sentiment_timeline(company_id: int):
+    """Get sentiment counts grouped by month for a company."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+            substr(a.announcement_date, 1, 7) as month,
+            ai.sentiment,
+            COUNT(*) as cnt
+        FROM announcement_insights ai
+        JOIN announcements a ON ai.announcement_id = a.id
+        WHERE ai.company_id = ? AND ai.sentiment IS NOT NULL
+        GROUP BY month, ai.sentiment
+        ORDER BY month
+    """, (company_id,))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    timeline = {}
+    for r in rows:
+        m = r['month']
+        if m not in timeline:
+            timeline[m] = {'month': m, 'positive': 0, 'negative': 0, 'neutral': 0}
+        timeline[m][r['sentiment']] = r['cnt']
+
+    return {"timeline": list(timeline.values())}
+
+
+@app.get("/api/stock-info/{symbol}")
+def get_stock_info(symbol: str):
+    """Fetch live stock info from yfinance."""
+    try:
+        from data.collectors.yfinance_data import get_stock_info as fetch_info
+        info = fetch_info(symbol.upper())
+        return {"symbol": symbol.upper(), "info": info}
+    except Exception as e:
+        return {"symbol": symbol.upper(), "info": None, "error": str(e)}
+
+
+@app.get("/api/search-stock")
+def search_stock(q: str):
+    """Search for stocks by name or symbol from existing DB or BSE code."""
+    conn = get_db()
+    cursor = conn.cursor()
+    q_upper = q.upper()
+    q_like = f"%{q}%"
+
+    # First search existing DB
+    cursor.execute("""
+        SELECT id, company_name, nse_symbol, bse_code, sector
+        FROM companies
+        WHERE UPPER(company_name) LIKE ? OR UPPER(nse_symbol) LIKE ? OR UPPER(bse_code) LIKE ?
+        LIMIT 10
+    """, (q_like, q_like, q_like))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    results = []
+    for r in rows:
+        results.append({
+            "symbol": r["nse_symbol"] or r["bse_code"] or "",
+            "company_name": r["company_name"],
+            "bse_code": r["bse_code"] or "",
+            "in_db": True,
+            "company_id": r["id"],
+        })
+
+    return {"results": results}
 
 
 @app.get("/")
 def serve_frontend():
     return FileResponse(str(FRONTEND_DIR / "index.html"))
+
+
+@app.get("/fetch")
+def serve_fetch_page():
+    return FileResponse(str(FRONTEND_DIR / "fetch.html"))
+
+
+@app.get("/api/fetch")
+def fetch_stock(symbol: str, years: int = 5):
+    """Fetch announcements for any stock from BSE/NSE."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+
+    try:
+        from fetch_stock_announcements import fetch_stock as do_fetch
+        result = do_fetch(symbol, years)
+        return result
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/fetched-stocks")
+def list_fetched_stocks():
+    """List all fetched stocks."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT fs.*, c.company_name, c.sector, c.market_cap,
+               cs.total_announcements, cs.has_guidance, cs.has_order_news,
+               cs.has_capex_news, cs.has_dividend_news, cs.has_financial_results
+        FROM fetched_stock fs
+        LEFT JOIN companies c ON fs.company_id = c.id
+        LEFT JOIN company_summary cs ON fs.company_id = cs.company_id
+        ORDER BY fs.fetched_at DESC
+    """)
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return {"stocks": rows}
 
 
 if __name__ == "__main__":

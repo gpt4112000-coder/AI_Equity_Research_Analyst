@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fetch Stock - AI Equity Research</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+        .container{max-width:1400px;margin:0 auto;padding:1rem}
+        nav{background:#1e293b;border-bottom:1px solid #334155;padding:.75rem 1rem;position:sticky;top:0;z-index:10}
+        nav .inner{max-width:1400px;margin:0 auto;display:flex;align-items:center;justify-content:space-between}
+        .logo{font-size:1.1rem;font-weight:700;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+        .btn{padding:.45rem .9rem;border-radius:8px;cursor:pointer;border:none;font-weight:500;font-size:.8rem;transition:all .15s}
+        .btn-primary{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff}
+        .btn-secondary{background:#334155;color:#e2e8f0}
+        .btn-secondary:hover{background:#475569}
+        .btn:disabled{opacity:0.5;cursor:not-allowed}
+        .card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1.25rem;margin-bottom:.75rem}
+        .muted{color:#94a3b8}
+        .sector-badge{font-size:.65rem;padding:.15rem .4rem;border-radius:4px;background:#1e3a5f;color:#60a5fa}
+        .tag{display:inline-block;padding:.15rem .45rem;border-radius:4px;font-size:.65rem;font-weight:600;margin-right:.15rem}
+        .tag-g{background:#4c1d95;color:#c4b5fd}
+        .tag-o{background:#78350f;color:#fbbf24}
+        .tag-c{background:#164e63;color:#67e8f9}
+        .tag-d{background:#713f12;color:#fde68a}
+        .tag-f{background:#065f46;color:#6ee7b7}
+
+        .fetch-section{max-width:600px;margin:3rem auto;text-align:center}
+        .fetch-section h1{font-size:1.5rem;font-weight:700;margin-bottom:.5rem;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+        .fetch-section p{color:#94a3b8;margin-bottom:1.5rem;font-size:.9rem}
+
+        .search-box{display:flex;gap:.5rem;margin-bottom:1rem}
+        .search-box input{flex:1;background:#0f172a;border:2px solid #334155;border-radius:8px;padding:.75rem 1rem;color:#e2e8f0;font-size:1rem}
+        .search-box input:focus{outline:none;border-color:#3b82f6}
+        .search-box input::placeholder{color:#64748b}
+
+        .timeline-selector{display:flex;gap:.5rem;margin-bottom:1.5rem;justify-content:center}
+        .timeline-btn{padding:.5rem 1.25rem;border-radius:8px;cursor:pointer;border:2px solid #334155;background:#1e293b;color:#94a3b8;font-weight:600;font-size:.85rem;transition:all .15s}
+        .timeline-btn:hover{border-color:#60a5fa;color:#fff}
+        .timeline-btn.active{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;border-color:transparent}
+
+        .fetch-btn{padding:.75rem 2rem;border-radius:8px;cursor:pointer;border:none;background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff;font-weight:700;font-size:1rem;transition:all .15s;width:100%}
+        .fetch-btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(59,130,246,0.3)}
+        .fetch-btn:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+
+        .status-box{margin-top:1.5rem;padding:1rem;border-radius:8px;display:none}
+        .status-box.loading{display:block;background:#1e3a5f;border:1px solid #3b82f6;color:#60a5fa}
+        .status-box.success{display:block;background:#065f46;border:1px solid #10b981;color:#6ee7b7}
+        .status-box.error{display:block;background:#7f1d1d;border:1px solid #ef4444;color:#fca5a5}
+        .status-box.exists{display:block;background:#78350f;border:1px solid #f59e0b;color:#fde68a}
+
+        .spinner{display:inline-block;width:16px;height:16px;border:2px solid #60a5fa;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;margin-right:.5rem;vertical-align:middle}
+        @keyframes spin{to{transform:rotate(360deg)}}
+
+        .history-section{margin-top:3rem}
+        .history-section h2{font-size:1.1rem;font-weight:600;margin-bottom:1rem;color:#94a3b8}
+        .history-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1rem}
+        .history-card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:1rem;cursor:pointer;transition:all .15s}
+        .history-card:hover{border-color:#60a5fa;transform:translateY(-2px)}
+        .history-card .name{font-weight:600;font-size:.95rem;margin-bottom:.25rem}
+        .history-card .meta{font-size:.75rem;color:#94a3b8}
+        .history-card .stats{display:flex;gap:.5rem;margin-top:.5rem;flex-wrap:wrap}
+        .history-card .stat{font-size:.7rem;padding:.2rem .5rem;border-radius:4px;background:#0f172a}
+    </style>
+</head>
+<body>
+    <nav>
+        <div class="inner">
+            <div class="logo">AI Equity Research - Small Cap India</div>
+            <div id="nav-buttons"></div>
+        </div>
+    </nav>
+    <div class="container" id="app"></div>
+
+<script>
+var API = '/api';
+
+function api(path, opts) {
+    var fetchOpts = {method: (opts && opts.method) || 'GET'};
+    if (opts && opts.body) {
+        fetchOpts.headers = {'Content-Type': 'application/json'};
+        fetchOpts.body = JSON.stringify(opts.body);
+    }
+    return fetch(API + path, fetchOpts).then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    });
+}
+
+function navigate(page) {
+    if (page === 'dashboard') window.location.href = '/';
+    else if (page === 'companies') window.location.href = '/#companies';
+    else if (page === 'fetch') render();
+}
+
+function renderNav() {
+    var pages = ['dashboard', 'companies', 'fetch'];
+    var current = 'fetch';
+    var html = '';
+    for (var i = 0; i < pages.length; i++) {
+        var p = pages[i];
+        var cls = current === p ? 'btn btn-primary' : 'btn btn-secondary';
+        html += '<button class="' + cls + '" onclick="navigate(\'' + p + '\')" style="margin-left:.5rem">' + p.charAt(0).toUpperCase() + p.slice(1) + '</button>';
+    }
+    document.getElementById('nav-buttons').innerHTML = html;
+}
+
+var state = {
+    symbol: '',
+    years: 5,
+    loading: false,
+    result: null,
+    history: []
+};
+
+function render() {
+    var app = document.getElementById('app');
+    var html = '<div class="fetch-section">';
+    html += '<h1>Fetch Stock Announcements</h1>';
+    html += '<p>Enter stock name or symbol to fetch all announcements from BSE/NSE</p>';
+
+    html += '<div class="search-box" style="position:relative">';
+    html += '<input type="text" id="symbol-input" placeholder="e.g. KPIT, Reliance, TCS..." value="' + state.symbol + '" oninput="onSearchInput()" onkeyup="if(event.key===\'Enter\')doFetch()">';
+    html += '<div id="search-dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:#1e293b;border:1px solid #334155;border-radius:0 0 8px 8px;max-height:200px;overflow-y:auto;z-index:100"></div>';
+    html += '</div>';
+
+    html += '<div class="timeline-selector">';
+    var timelines = [{v:1,l:'1 Year'},{v:3,l:'3 Years'},{v:5,l:'5 Years'},{v:10,l:'10 Years'}];
+    for (var i = 0; i < timelines.length; i++) {
+        var t = timelines[i];
+        var cls = state.years === t.v ? 'timeline-btn active' : 'timeline-btn';
+        html += '<button class="' + cls + '" onclick="selectTimeline(' + t.v + ')">' + t.l + '</button>';
+    }
+    html += '</div>';
+
+    html += '<button class="fetch-btn" id="fetch-btn" onclick="doFetch()"' + (state.loading ? ' disabled' : '') + '>';
+    if (state.loading) {
+        html += '<span class="spinner"></span>Fetching from exchange...';
+    } else {
+        html += 'Fetch Announcements';
+    }
+    html += '</button>';
+
+    // Status box
+    if (state.result) {
+        var r = state.result;
+        var statusClass = r.status;
+        if (statusClass === 'success' || statusClass === 'exists') statusClass = r.status;
+        html += '<div class="status-box ' + statusClass + '">';
+        if (r.status === 'loading') {
+            html += '<span class="spinner"></span>' + r.message;
+        } else if (r.status === 'success') {
+            html += '<strong>' + r.company_name + '</strong><br>';
+            html += 'Found ' + r.count + ' announcements from ' + r.exchange + '<br>';
+            html += '<a href="/?company=' + r.company_id + '" style="color:#60a5fa;margin-top:.5rem;display:inline-block">View Company Page →</a>';
+        } else if (r.status === 'exists') {
+            html += '<strong>' + r.message + '</strong><br>';
+            html += r.count + ' announcements already in database<br>';
+            html += '<a href="/?company=' + r.company_id + '" style="color:#fde68a;margin-top:.5rem;display:inline-block">View Company Page →</a>';
+        } else if (r.status === 'error') {
+            html += 'Error: ' + r.message;
+        }
+        html += '</div>';
+    }
+
+    html += '</div>';
+
+    // History section
+    html += '<div class="history-section">';
+    html += '<h2>Previously Fetched Stocks</h2>';
+    html += '<div class="history-grid" id="history-grid">Loading...</div>';
+    html += '</div>';
+
+    app.innerHTML = html;
+    loadHistory();
+}
+
+function selectTimeline(years) {
+    state.years = years;
+    render();
+}
+
+var searchTimeout = null;
+function onSearchInput() {
+    var val = document.getElementById('symbol-input').value.trim();
+    var dd = document.getElementById('search-dropdown');
+    if (val.length < 2) { dd.style.display = 'none'; return; }
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(function() {
+        api('/search-stock?q=' + encodeURIComponent(val)).then(function(d) {
+            if (!d.results || d.results.length === 0) { dd.style.display = 'none'; return; }
+            var html = '';
+            for (var i = 0; i < d.results.length; i++) {
+                var r = d.results[i];
+                html += '<div style="padding:.6rem .75rem;cursor:pointer;border-bottom:1px solid #334155;font-size:.8rem" onmouseover="this.style.background=\'#334155\'" onmouseout="this.style.background=\'transparent\'" onclick="selectStock(\'' + r.symbol + '\')">';
+                html += '<div style="font-weight:600">' + r.symbol + '</div>';
+                html += '<div style="color:#94a3b8;font-size:.7rem">' + r.company_name + ' (BSE: ' + r.bse_code + ')</div>';
+                html += '</div>';
+            }
+            dd.innerHTML = html;
+            dd.style.display = 'block';
+        });
+    }, 300);
+}
+
+function selectStock(symbol) {
+    document.getElementById('symbol-input').value = symbol;
+    document.getElementById('search-dropdown').style.display = 'none';
+    state.symbol = symbol;
+}
+
+function doFetch() {
+    var symbol = document.getElementById('symbol-input').value.trim();
+    if (!symbol) {
+        alert('Please enter a stock symbol');
+        return;
+    }
+
+    document.getElementById('search-dropdown').style.display = 'none';
+    state.symbol = symbol;
+    state.loading = true;
+    state.result = {status: 'loading', message: 'Fetching ' + symbol + ' from exchange...'};
+    render();
+
+    api('/fetch?symbol=' + encodeURIComponent(symbol) + '&years=' + state.years).then(function(r) {
+        state.loading = false;
+        state.result = r;
+        render();
+    }).catch(function(e) {
+        state.loading = false;
+        state.result = {status: 'error', message: e.message};
+        render();
+    });
+}
+
+function loadHistory() {
+    api('/fetched-stocks').then(function(d) {
+        state.history = d.stocks || [];
+        var grid = document.getElementById('history-grid');
+        if (!grid) return;
+
+        if (state.history.length === 0) {
+            grid.innerHTML = '<div class="muted" style="grid-column:1/-1;text-align:center;padding:2rem">No stocks fetched yet. Try fetching your first stock above!</div>';
+            return;
+        }
+
+        var html = '';
+        for (var i = 0; i < state.history.length; i++) {
+            var s = state.history[i];
+            html += '<div class="history-card" onclick="window.location.href=\'/?company=' + s.company_id + '\'">';
+            html += '<div class="name">' + (s.company_name || s.symbol) + '</div>';
+            html += '<div class="meta">' + s.symbol + ' · ' + s.exchange + ' · ' + (s.sector || 'Unknown sector') + '</div>';
+            html += '<div class="stats">';
+            html += '<span class="stat">' + (s.announcement_count || 0) + ' announcements</span>';
+            if (s.has_guidance) html += '<span class="stat" style="color:#c4b5fd">Guidance</span>';
+            if (s.has_order_news) html += '<span class="stat" style="color:#fbbf24">Orders</span>';
+            if (s.has_capex_news) html += '<span class="stat" style="color:#67e8f9">Capex</span>';
+            if (s.has_dividend_news) html += '<span class="stat" style="color:#fde68a">Dividend</span>';
+            if (s.has_financial_results) html += '<span class="stat" style="color:#6ee7b7">Financials</span>';
+            html += '</div>';
+            html += '<div class="meta" style="margin-top:.5rem">Fetched: ' + (s.fetched_at || 'Unknown') + '</div>';
+            html += '</div>';
+        }
+        grid.innerHTML = html;
+    }).catch(function(e) {
+        var grid = document.getElementById('history-grid');
+        if (grid) grid.innerHTML = '<div class="muted">Error loading history</div>';
+    });
+}
+
+renderNav();
+render();
+</script>
+</body>
+</html>

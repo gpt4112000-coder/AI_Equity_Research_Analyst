@@ -151,6 +151,24 @@ CREATE TABLE IF NOT EXISTS technical_indicators (
     FOREIGN KEY (company_id) REFERENCES companies(id),
     UNIQUE(company_id, indicator_date)
 );
+
+CREATE TABLE IF NOT EXISTS fetched_stock (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    exchange TEXT NOT NULL,
+    bse_code TEXT,
+    nse_symbol TEXT,
+    company_name TEXT,
+    company_id INTEGER,
+    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    date_from DATE,
+    date_to DATE,
+    announcement_count INTEGER DEFAULT 0,
+    FOREIGN KEY (company_id) REFERENCES companies(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fetched_symbol ON fetched_stock(symbol);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fetched_symbol_exchange ON fetched_stock(symbol, exchange);
 """
 
 

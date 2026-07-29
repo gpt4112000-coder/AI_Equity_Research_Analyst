@@ -48,6 +48,16 @@
         .search-row{display:flex;gap:.5rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap}
         .pagination{display:flex;justify-content:center;align-items:center;gap:.75rem;margin-top:1rem}
         .pagination span{color:#94a3b8;font-size:.8rem}
+        .filter-row{display:flex;flex-wrap:wrap;gap:1rem;margin-bottom:1rem;padding:1rem;background:#1e293b;border-radius:12px;border:1px solid #334155}
+        .filter-group{display:flex;flex-direction:column;gap:.35rem}
+        .filter-label{font-size:.7rem;color:#94a3b8;font-weight:500;text-transform:uppercase;letter-spacing:.05em}
+        .sort-select{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:.4rem .6rem;color:#e2e8f0;font-size:.8rem;min-width:140px}
+        .sort-select:focus{outline:none;border-color:#3b82f6}
+        .sort-btn{min-width:70px;font-size:.75rem}
+        .date-input{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:.4rem .6rem;color:#e2e8f0;font-size:.8rem;width:130px}
+        .date-input:focus{outline:none;border-color:#3b82f6}
+        .amount-input{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:.4rem .6rem;color:#e2e8f0;font-size:.8rem;width:80px}
+        .amount-input:focus{outline:none;border-color:#3b82f6}
         .ann-item{padding:.6rem 0;border-bottom:1px solid #334155}
         .ann-item:last-child{border-bottom:none}
     </style>
@@ -63,7 +73,16 @@
 
 <script>
 var API = '/api';
-var state = { page: 'dashboard', sector: null, companyId: null, search: '', offset: 0 };
+var state = { page: 'dashboard', sector: null, companyId: null, search: '', offset: 0, insight_type: null, sort_by: 'market_cap', sort_order: 'desc', from_date: null, to_date: null, sentiment: null, min_amount: null, max_amount: null };
+
+(function() {
+    var params = new URLSearchParams(window.location.search);
+    var companyId = params.get('company');
+    if (companyId) {
+        state.page = 'company';
+        state.companyId = parseInt(companyId);
+    }
+})();
 
 function api(path, opts) {
     var fetchOpts = {method: (opts && opts.method) || 'GET'};
@@ -96,6 +115,7 @@ function renderNav() {
         var cls = state.page === p ? 'btn btn-primary' : 'btn btn-secondary';
         html += '<button class="' + cls + '" onclick="navigate(\'' + p + '\')" style="margin-left:.5rem">' + p.charAt(0).toUpperCase() + p.slice(1) + '</button>';
     }
+    html += '<a href="/fetch" class="btn btn-secondary" style="margin-left:.5rem;text-decoration:none">Fetch Stock</a>';
     document.getElementById('nav-buttons').innerHTML = html;
 }
 
@@ -146,11 +166,9 @@ function renderDashboard(el) {
 }
 
 function filterByInsight(type) {
-    var map = {guidance: 'has_guidance', capex: 'has_capex', order: 'has_orders', dividend: 'has_dividend', financial: 'has_financials'};
-    if (map[type]) {
-        var url = '/companies?' + map[type] + '=1&limit=100';
-        renderCompanyList(document.getElementById('app'), url);
-    }
+    state.insight_type = type;
+    state.offset = 0;
+    renderCompanies(document.getElementById('app'));
 }
 
 function renderCompanies(el) {
@@ -159,6 +177,14 @@ function renderCompanies(el) {
     var url = '/companies?limit=100&offset=' + state.offset;
     if (state.sector) url += '&sector=' + encodeURIComponent(state.sector);
     if (state.search) url += '&search=' + encodeURIComponent(state.search);
+    if (state.insight_type) url += '&insight_type=' + encodeURIComponent(state.insight_type);
+    if (state.sort_by) url += '&sort_by=' + encodeURIComponent(state.sort_by);
+    if (state.sort_order) url += '&sort_order=' + encodeURIComponent(state.sort_order);
+    if (state.from_date) url += '&from_date=' + encodeURIComponent(state.from_date);
+    if (state.to_date) url += '&to_date=' + encodeURIComponent(state.to_date);
+    if (state.sentiment) url += '&sentiment=' + encodeURIComponent(state.sentiment);
+    if (state.min_amount) url += '&min_amount=' + state.min_amount;
+    if (state.max_amount) url += '&max_amount=' + state.max_amount;
 
     Promise.all([api('/sectors'), api(url)]).then(function(results) {
         var sectors = results[0].sectors || {};
@@ -179,6 +205,56 @@ function renderCompanies(el) {
         for (var s in sectors) {
             html += '<span class="chip' + (state.sector === s ? ' active' : '') + '" onclick="state.sector=\'' + s + '\';state.offset=0;renderCompanies(document.getElementById(\'app\'))">' + s.replace(/_/g, ' ') + ' (' + sectors[s] + ')</span>';
         }
+        html += '</div>';
+
+        html += '<div class="filter-row">';
+        html += '<div class="filter-group">';
+        html += '<label class="filter-label">Insight Type</label>';
+        html += '<div class="filters">';
+        var insightTypes = [{v:'',l:'All'},{v:'guidance',l:'Guidance'},{v:'order',l:'Orders'},{v:'capex',l:'Capex'},{v:'financial',l:'Financial'},{v:'dividend',l:'Dividend'},{v:'credit_rating',l:'Credit'},{v:'management',l:'Management'},{v:'acquisition',l:'Acquisition'}];
+        for (var i=0;i<insightTypes.length;i++) {
+            var it=insightTypes[i];
+            html += '<span class="chip'+(state.insight_type===it.v||(!state.insight_type&&!it.v)?' active':'')+'" onclick="state.insight_type=\''+it.v+'\';state.offset=0;renderCompanies(document.getElementById(\'app\'))">'+it.l+'</span>';
+        }
+        html += '</div></div>';
+
+        html += '<div class="filter-group">';
+        html += '<label class="filter-label">Sort By</label>';
+        html += '<select class="sort-select" onchange="state.sort_by=this.value;state.offset=0;renderCompanies(document.getElementById(\'app\'))">';
+        var sortOpts = [{v:'market_cap',l:'Market Cap'},{v:'announcements',l:'Announcements'},{v:'company',l:'Company Name'},{v:'latest',l:'Latest Date'},{v:'sentiment',l:'Sentiment'},{v:'guidance_count',l:'Guidance Count'},{v:'order_count',l:'Order Count'},{v:'capex_count',l:'Capex Count'}];
+        for (var i=0;i<sortOpts.length;i++) {
+            html += '<option value="'+sortOpts[i].v+'"'+(state.sort_by===sortOpts[i].v?' selected':'')+'>'+sortOpts[i].l+'</option>';
+        }
+        html += '</select>';
+        html += '<button class="btn btn-secondary sort-btn" onclick="state.sort_order=state.sort_order===\'desc\'?\'asc\':\'desc\';renderCompanies(document.getElementById(\'app\'))">'+(state.sort_order==='desc'?'↓ Desc':'↑ Asc')+'</button>';
+        html += '</div>';
+
+        html += '<div class="filter-group">';
+        html += '<label class="filter-label">Date Range</label>';
+        html += '<input type="date" class="date-input" value="'+(state.from_date||'')+'" onchange="state.from_date=this.value||null;state.offset=0;renderCompanies(document.getElementById(\'app\'))">';
+        html += '<span class="muted" style="font-size:.7rem">to</span>';
+        html += '<input type="date" class="date-input" value="'+(state.to_date||'')+'" onchange="state.to_date=this.value||null;state.offset=0;renderCompanies(document.getElementById(\'app\'))">';
+        html += '</div>';
+
+        html += '<div class="filter-group">';
+        html += '<label class="filter-label">Sentiment</label>';
+        html += '<div class="filters">';
+        var sentOpts = [{v:'',l:'All'},{v:'positive',l:'Positive'},{v:'negative',l:'Negative'},{v:'neutral',l:'Neutral'}];
+        for (var i=0;i<sentOpts.length;i++) {
+            html += '<span class="chip'+(state.sentiment===sentOpts[i].v||(!state.sentiment&&!sentOpts[i].v)?' active':'')+'" onclick="state.sentiment=\''+sentOpts[i].v+'\';state.offset=0;renderCompanies(document.getElementById(\'app\'))">'+sentOpts[i].l+'</span>';
+        }
+        html += '</div></div>';
+
+        html += '<div class="filter-group">';
+        html += '<label class="filter-label">Amount (Cr)</label>';
+        html += '<input type="number" class="amount-input" placeholder="Min" value="'+(state.min_amount||'')+'" onchange="state.min_amount=this.value||null;state.offset=0;renderCompanies(document.getElementById(\'app\'))">';
+        html += '<span class="muted" style="font-size:.7rem">to</span>';
+        html += '<input type="number" class="amount-input" placeholder="Max" value="'+(state.max_amount||'')+'" onchange="state.max_amount=this.value||null;state.offset=0;renderCompanies(document.getElementById(\'app\'))">';
+        html += '</div>';
+
+        html += '<div class="filter-group" style="align-self:end">';
+        html += '<button class="btn btn-secondary" onclick="state.insight_type=null;state.sort_by=\'market_cap\';state.sort_order=\'desc\';state.from_date=null;state.to_date=null;state.sentiment=null;state.min_amount=null;state.max_amount=null;state.offset=0;renderCompanies(document.getElementById(\'app\'))">Clear Filters</button>';
+        html += '</div>';
         html += '</div>';
 
         html += '<div class="card" style="padding:.5rem;overflow-x:auto"><table><thead><tr>';
@@ -233,6 +309,7 @@ function renderCompany(el) {
         var c = d.company;
         var anns = d.announcements || [];
         var ins = d.insight_summary || [];
+        var symbol = c.nse_symbol || c.bse_code || '';
 
         var html = '<button class="btn btn-secondary back-btn" onclick="navigate(\'companies\')">Back to List</button>';
 
@@ -247,6 +324,10 @@ function renderCompany(el) {
         html += '<div style="font-size:1.5rem;font-weight:700;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent">₹' + (c.market_cap_cr ? c.market_cap_cr.toFixed(0) : '0') + ' Cr</div>';
         html += '<div class="muted" style="font-size:.75rem">' + (c.sector || '') + ' | ' + (c.industry || '') + '</div>';
         html += '</div></div></div>';
+
+        if (symbol) {
+            html += '<div class="card" id="stock-info-card"><div style="display:flex;align-items:center;gap:.5rem"><span class="spinner" style="width:14px;height:14px;border:2px solid #60a5fa;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite"></span><span style="font-size:.8rem;color:#94a3b8">Loading live market data...</span></div></div>';
+        }
 
         html += '<div class="detail-grid">';
         html += '<div class="card stat-card"><div class="label">Announcements</div><div class="value" style="font-size:1.25rem">' + (c.total_announcements || 0) + '</div></div>';
@@ -329,6 +410,11 @@ function renderCompany(el) {
 
         html += '</div>';
 
+        html += '<div class="card" id="sentiment-timeline-card">';
+        html += '<h3 style="margin-bottom:.5rem;font-size:.9rem">Sentiment Timeline</h3>';
+        html += '<div id="sentiment-timeline-content" style="font-size:.8rem;color:#94a3b8">Loading timeline...</div>';
+        html += '</div>';
+
         html += '<div class="card" id="ai-summary-card">';
         html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem">';
         html += '<h3 style="font-size:.9rem">AI Research Summary</h3>';
@@ -355,8 +441,135 @@ function renderCompany(el) {
         html += '</div></div>';
 
         el.innerHTML = html;
+
+        if (symbol) {
+            loadStockInfo(symbol);
+        }
+        loadSentimentTimeline(state.companyId);
     }).catch(function(e) {
         el.innerHTML = '<div class="card">Error: ' + e.message + '</div>';
+    });
+}
+
+function loadStockInfo(symbol) {
+    var card = document.getElementById('stock-info-card');
+    if (!card) return;
+
+    api('/stock-info/' + encodeURIComponent(symbol)).then(function(d) {
+        if (!d.info || d.error) {
+            card.innerHTML = '<div style="font-size:.8rem;color:#94a3b8">Live data unavailable for ' + symbol + '</div>';
+            return;
+        }
+
+        var info = d.info;
+        var price = info.current_price || info.previous_close || 0;
+        var prevClose = info.previous_close || 0;
+        var change = prevClose ? ((price - prevClose) / prevClose * 100) : 0;
+        var changeColor = change >= 0 ? '#34d399' : '#f87171';
+        var changeSign = change >= 0 ? '+' : '';
+
+        var html = '<div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:1rem">';
+        html += '<div>';
+        html += '<div style="font-size:.7rem;color:#94a3b8;margin-bottom:.25rem">LIVE MARKET DATA</div>';
+        html += '<div style="font-size:2rem;font-weight:700;color:#e2e8f0">₹' + price.toFixed(2) + '</div>';
+        if (prevClose) {
+            html += '<div style="font-size:.85rem;font-weight:600;color:' + changeColor + '">' + changeSign + change.toFixed(2) + '% from ₹' + prevClose.toFixed(2) + '</div>';
+        }
+        html += '</div>';
+
+        html += '<div style="display:flex;gap:1.5rem;flex-wrap:wrap">';
+        if (info.day_high && info.day_low) {
+            html += '<div><div class="muted" style="font-size:.65rem">Day Range</div><div style="font-size:.85rem;font-weight:500">₹' + info.day_low.toFixed(2) + ' - ₹' + info.day_high.toFixed(2) + '</div></div>';
+        }
+        if (info["52w_high"] && info["52w_low"]) {
+            html += '<div><div class="muted" style="font-size:.65rem">52 Week Range</div><div style="font-size:.85rem;font-weight:500">₹' + info["52w_low"].toFixed(2) + ' - ₹' + info["52w_high"].toFixed(2) + '</div></div>';
+        }
+        if (info.volume) {
+            html += '<div><div class="muted" style="font-size:.65rem">Volume</div><div style="font-size:.85rem;font-weight:500">' + (info.volume / 100000).toFixed(1) + 'L</div></div>';
+        }
+        html += '</div>';
+        html += '</div>';
+
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:.75rem;margin-top:1rem;padding-top:1rem;border-top:1px solid #334155">';
+
+        var metrics = [
+            { label: 'Market Cap', value: info.market_cap ? '₹' + (info.market_cap / 10000000).toFixed(0) + ' Cr' : '-' },
+            { label: 'P/E Ratio', value: info.pe_ratio ? info.pe_ratio.toFixed(2) : '-' },
+            { label: 'P/B Ratio', value: info.pb_ratio ? info.pb_ratio.toFixed(2) : '-' },
+            { label: 'EPS', value: info.eps ? '₹' + info.eps.toFixed(2) : '-' },
+            { label: 'ROE', value: info.roe ? (info.roe * 100).toFixed(1) + '%' : '-' },
+            { label: 'Debt/Equity', value: info.debt_to_equity ? info.debt_to_equity.toFixed(2) : '-' },
+            { label: 'Div Yield', value: info.dividend_yield ? (info.dividend_yield * 100).toFixed(2) + '%' : '-' },
+            { label: 'Beta', value: info.beta ? info.beta.toFixed(2) : '-' },
+            { label: 'SMA 50', value: info.sma_50 ? '₹' + info.sma_50.toFixed(2) : '-' },
+            { label: 'SMA 200', value: info.sma_200 ? '₹' + info.sma_200.toFixed(2) : '-' },
+        ];
+
+        for (var i = 0; i < metrics.length; i++) {
+            var m = metrics[i];
+            html += '<div style="background:#0f172a;border-radius:6px;padding:.5rem .75rem">';
+            html += '<div class="muted" style="font-size:.6rem">' + m.label + '</div>';
+            html += '<div style="font-size:.85rem;font-weight:600">' + m.value + '</div>';
+            html += '</div>';
+        }
+
+        html += '</div>';
+
+        card.innerHTML = html;
+    }).catch(function(e) {
+        card.innerHTML = '<div style="font-size:.8rem;color:#94a3b8">Could not load market data</div>';
+    });
+}
+
+function loadSentimentTimeline(companyId) {
+    var el = document.getElementById('sentiment-timeline-content');
+    if (!el) return;
+
+    api('/sentiment-timeline/' + companyId).then(function(d) {
+        var timeline = d.timeline || [];
+        if (timeline.length === 0) {
+            el.innerHTML = '<div class="muted" style="font-size:.75rem">No sentiment data available</div>';
+            return;
+        }
+
+        var maxVal = 0;
+        for (var i = 0; i < timeline.length; i++) {
+            var t = timeline[i];
+            var total = t.positive + t.negative + t.neutral;
+            if (total > maxVal) maxVal = total;
+        }
+
+        var html = '<div style="display:flex;gap:.5rem;align-items:end;overflow-x:auto;padding:.5rem 0">';
+        for (var i = 0; i < timeline.length; i++) {
+            var t = timeline[i];
+            var total = t.positive + t.negative + t.neutral;
+            var h = maxVal > 0 ? (total / maxVal * 80) : 0;
+            var pH = total > 0 ? (t.positive / total * h) : 0;
+            var nH = total > 0 ? (t.neutral / total * h) : 0;
+            var ngH = total > 0 ? (t.negative / total * h) : 0;
+
+            var label = t.month.substring(2);
+
+            html += '<div style="text-align:center;min-width:35px">';
+            html += '<div style="display:flex;flex-direction:column-reverse;height:85px;width:24px;margin:0 auto;border-radius:4px;overflow:hidden;background:#1e293b">';
+            html += '<div style="height:' + pH + 'px;background:#34d399" title="Positive: ' + t.positive + '"></div>';
+            html += '<div style="height:' + nH + 'px;background:#60a5fa" title="Neutral: ' + t.neutral + '"></div>';
+            html += '<div style="height:' + ngH + 'px;background:#f87171" title="Negative: ' + t.negative + '"></div>';
+            html += '</div>';
+            html += '<div style="font-size:.55rem;color:#64748b;margin-top:.25rem;transform:rotate(-45deg);white-space:nowrap">' + label + '</div>';
+            html += '</div>';
+        }
+        html += '</div>';
+
+        html += '<div style="display:flex;gap:1rem;font-size:.7rem;margin-top:.5rem;justify-content:center">';
+        html += '<span style="color:#34d399">● Positive</span>';
+        html += '<span style="color:#60a5fa">● Neutral</span>';
+        html += '<span style="color:#f87171">● Negative</span>';
+        html += '</div>';
+
+        el.innerHTML = html;
+    }).catch(function(e) {
+        el.innerHTML = '<div class="muted" style="font-size:.75rem">Could not load timeline</div>';
     });
 }
 
@@ -415,7 +628,11 @@ function generateAllAnn(companyId) {
     btn.textContent = 'Analyzing...';
 
     api('/companies/' + companyId + '/generate_summaries', {method: 'POST'}).then(function(d) {
-        btn.textContent = 'Done (' + d.generated + ' analyzed)';
+        if (d.generated === 0 && d.already_done > 0) {
+            btn.textContent = 'All ' + d.already_done + ' already analyzed';
+        } else {
+            btn.textContent = 'Done (' + d.generated + ' new, ' + d.already_done + ' existing)';
+        }
         btn.disabled = false;
         renderCompany(document.getElementById('app'));
     }).catch(function(e) {
