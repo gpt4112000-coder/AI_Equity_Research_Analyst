@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS announcements (
     attachment_url TEXT,
     announcement_date DATE NOT NULL,
     announcement_time TIME,
+    is_critical INTEGER DEFAULT 0,
     raw_data TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (company_id) REFERENCES companies(id)
@@ -68,6 +69,29 @@ CREATE INDEX IF NOT EXISTS idx_ann_date ON announcements(announcement_date);
 CREATE INDEX IF NOT EXISTS idx_ann_category ON announcements(category);
 CREATE INDEX IF NOT EXISTS idx_ann_exchange ON announcements(exchange);
 CREATE INDEX IF NOT EXISTS idx_ann_company_date ON announcements(company_id, announcement_date);
+CREATE INDEX IF NOT EXISTS idx_ann_pending_ai ON announcements(company_id) WHERE ai_summary IS NULL OR ai_summary = '';
+
+CREATE TABLE IF NOT EXISTS ai_insights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    announcement_id INTEGER NOT NULL,
+    metric TEXT NOT NULL,
+    announcement_date DATE NOT NULL,
+    headline TEXT,
+    summary TEXT,
+    amount REAL,
+    amount_text TEXT,
+    sentiment TEXT,
+    importance TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (company_id) REFERENCES companies(id),
+    FOREIGN KEY (announcement_id) REFERENCES announcements(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_company_metric_date ON ai_insights(company_id, metric, announcement_date);
+CREATE INDEX IF NOT EXISTS idx_ai_company_date ON ai_insights(company_id, announcement_date);
+CREATE INDEX IF NOT EXISTS idx_ai_announcement ON ai_insights(announcement_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_unique ON ai_insights(company_id, announcement_id, metric);
 
 CREATE TABLE IF NOT EXISTS announcement_insights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,6 +200,24 @@ def init_db():
     conn = get_db()
     cursor = conn.cursor()
     cursor.executescript(SCHEMA_SQL)
+    # --- Migrations for existing databases ---
+    # 1) Add is_critical column if missing (older schema)
+    cols = [r[1] for r in cursor.execute("PRAGMA table_info(announcements)").fetchall()]
+    if "is_critical" not in cols:
+        cursor.execute("ALTER TABLE announcements ADD COLUMN is_critical INTEGER DEFAULT 0")
+        print("  Migration: added is_critical column to announcements")
+    # 2) Dedup existing rows (keep lowest id per company+date+headline)
+    cursor.execute("""
+        DELETE FROM announcements WHERE id NOT IN (
+            SELECT MIN(id) FROM announcements GROUP BY company_id, announcement_date, headline
+        )
+    """)
+    if cursor.rowcount > 0:
+        print(f"  Migration: removed {cursor.rowcount} duplicate announcement rows")
+    # 3) Unique index for future INSERT OR IGNORE dedup (only if not present)
+    existing = [r["name"] for r in cursor.execute("PRAGMA index_list(announcements)").fetchall()]
+    if "idx_ann_unique" not in existing:
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ann_unique ON announcements(company_id, announcement_date, headline)")
     conn.commit()
     conn.close()
     print("Database initialized successfully.")

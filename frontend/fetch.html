@@ -248,7 +248,7 @@ function loadHistory() {
         var html = '';
         for (var i = 0; i < state.history.length; i++) {
             var s = state.history[i];
-            html += '<div class="history-card" onclick="window.location.href=\'/?company=' + s.company_id + '\'">';
+            html += '<a class="history-card" style="display:block;text-decoration:none;color:inherit" href="/?company=' + s.company_id + '">';
             html += '<div class="name">' + (s.company_name || s.symbol) + '</div>';
             html += '<div class="meta">' + s.symbol + ' · ' + s.exchange + ' · ' + (s.sector || 'Unknown sector') + '</div>';
             html += '<div class="stats">';
@@ -260,7 +260,7 @@ function loadHistory() {
             if (s.has_financial_results) html += '<span class="stat" style="color:#6ee7b7">Financials</span>';
             html += '</div>';
             html += '<div class="meta" style="margin-top:.5rem">Fetched: ' + (s.fetched_at || 'Unknown') + '</div>';
-            html += '</div>';
+            html += '</a>';
         }
         grid.innerHTML = html;
     }).catch(function(e) {

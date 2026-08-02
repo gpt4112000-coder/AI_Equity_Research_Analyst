@@ -1,9 +1,9 @@
 # AI Equity Research Analyst - Progress Log
 
-**Last Updated:** 2026-07-29 18:30 IST
-**Current Version:** v4.1.0 (FastAPI + Filters)
+**Last Updated:** 2026-08-02 19:40 IST
+**Current Version:** v4.4.0 (AI Batch Analysis + AI Insights Timeline)
 **GitHub:** https://github.com/gpt4112000-coder/AI_Equity_Research_Analyst
-**Latest Commit:** 06e5c30
+**Latest Commit:** bf28436
 
 ---
 
@@ -28,20 +28,20 @@ Frontend (index.html, fetch.html, plain JS) → FastAPI (app.py) → SQLite DB
 
 ---
 
-## Database Stats (as of 2026-07-29)
+## Database Stats (as of 2026-08-02)
 
 | Metric | Value |
 |--------|-------|
 | Companies | 3,394 |
 | Sectors | 19 |
-| Announcements | 181,065 |
-| Rule-based Insights | 181,065 |
+| Announcements | 239,356 |
+| Rule-based Insights | 170,573 |
 | Announcements with AI Summary | ~143+ |
 | DB Size | 514+ MB |
 
 ### By Exchange
-- BSE: 135,396
-- NSE: 45,669
+- BSE: 152,562
+- NSE: 86,794
 
 ### By Insight Type
 - General: 105,517
@@ -359,3 +359,102 @@ git reset --hard <commit-hash>
 - All changes committed and pushed to GitHub
 - Backend running in tmux session `backend`
 - Ready to implement next features (peer comparison, industry directory, etc.)
+
+---
+
+## Session Summary (2026-08-02)
+
+### Work Completed
+1. **Right-click / New-tab links**
+   - Company list name cells now render as real `<a href="/?company=ID">` links (Ctrl/Cmd+click or middle-click opens new tab; plain click still navigates in-app)
+   - `fetch.html` history cards converted to real anchor links
+
+2. **Peer Comparison — Screener-style**
+   - New endpoint `GET /api/compare/sector-peers?company_id=X&limit=5` — auto-selects same-sector companies (NSE symbols prioritized, sorted by market cap)
+   - Peer table transposed: **stocks as rows, metrics as columns**
+   - Auto-populates base company + up to 5 sector peers on first open; saved selections respected
+   - Existing `/api/compare/metrics` + `/api/compare/peers` untouched
+
+3. **Documents Section (Documents tab in company page)**
+   - Replaced the "Recent Announcements" card with a **Documents** card with 4 tabs: Announcements / Annual reports / Credit ratings / Concalls
+   - Announcements tab has filters: Recent / Important / Search / All
+   - Annual reports from NSE API (cached) merged with classified announcement attachments
+   - Credit ratings classified from announcements DB (CRISIL, CARE, ICRA, BRICKWORK, INDIA RATINGS, FITCH)
+   - Concalls grouped by quarter with transcript/PPT/recording classified from attachment URLs
+   - New endpoint `GET /api/companies/{company_id}/documents` with 600s cache
+
+4. **Bug Fix — "loadDocuments is not defined"**
+   - Docs JS had been accidentally inserted inside the `navigate()` function scope; relocated to script end so all docs functions are global
+
+5. **Data Freshness Fix (critical)**
+   - Root cause: all import scripts referenced an `is_critical` column that **did not exist** in the `announcements` table → every `INSERT` raised `OperationalError` silently swallowed by `except: continue` → imports reported "0 new" since 2026-07-29
+   - Fixes in `backend/data/storage/db.py`:
+     - Added `is_critical INTEGER DEFAULT 0` to schema + auto-migration (`ALTER TABLE` if column missing)
+     - Deduplicated 10,492 duplicate announcement rows (and their orphan insights)
+     - Added UNIQUE index on `(company_id, announcement_date, headline)` so `INSERT OR IGNORE` stays dedup-safe
+   - Re-ran full import: **+34,324 announcements** → 239,356 total, DB now current through **2026-08-02**
+   - New `scripts/import_recent_announcements.py` — lightweight incremental importer (last 3 days, runs in <0.1s)
+   - `run_announcements.sh` cron now calls the incremental importer after downloads, so new data flows into the DB every minute automatically
+
+### Files Modified
+- `backend/app.py` — sector-peers + documents endpoints (~1,100 lines)
+- `backend/data/storage/db.py` — schema migration (is_critical + unique index + dedup)
+- `frontend/index.html` — new-tab links, peer comparison UI, Documents section (~1,300 lines)
+- `frontend/fetch.html` — history cards as real links
+- `scripts/import_recent_announcements.py` — NEW incremental importer
+- `BseIndiaApi/src/examples/run_announcements.sh` — cron now imports into DB
+
+### Test Results
+- Documents endpoint: RELIANCE (162 anns / 18 ARs / 7 ratings / 5 concalls), KPITTECH (97 anns / 7 ARs / 5 concalls), non-NSE companies return empty gracefully
+- Recent announcements visible: Birla Cable (516) shows 2026-08-02 financial results
+- Full import dedup-safe: 239,356 total == 239,356 distinct
+- `/api/stats` reports 239,356 announcements; backend serving on port 8001
+
+### Ready for Next Session
+- Changes uncommitted — commit + push to GitHub
+- AI summaries for the ~238k new announcements not yet generated (use the new "Analyze All Companies" batch button; takes many hours at ~6s/announcement)
+
+---
+
+## Session Summary (2026-08-02, part 2) — AI Batch Analysis + AI Insights Timeline
+
+### Problem
+- Running Ollama on the whole DB took hours and could only be triggered from the terminal (`scripts/batch_ai_summaries.py`), with no progress feedback and no guarantee of skipping already-read documents.
+
+### Work Completed
+1. **Structured AI insights storage (metric-wise, datewise)**
+   - New `ai_insights` table: one row per announcement × category (capex, guidance, orders, dividend, financials, regulatory, etc.) with `announcement_date`, `headline`, `summary`, parsed `amount`/`amount_text`, `sentiment`, `importance`
+   - Indexes: `(company_id, metric, announcement_date)`, `(company_id, announcement_date)`, unique `(company_id, announcement_id, metric)`
+   - Partial index `idx_ann_pending_ai` on announcements for fast "pending" lookups
+   - Refactored `generate_announcement_summary` → `_generate_announcement_summary_core` which also writes `ai_insights` rows (amount parsed from AI `key_numbers` into crore scale)
+
+2. **Background batch job system (webpage-triggerable)**
+   - `POST /api/ai/batch/start?company_id=X` — starts a daemon thread; scope = one company or all companies
+   - `GET /api/ai/batch/status` — progress polling (total, processed, generated, skipped, failed, current, message)
+   - `POST /api/ai/batch/stop` — clean stop between announcements
+   - **Incremental by design**: worker snapshots only `ai_summary IS NULL OR ai_summary = ''` rows; already-read docs are never re-processed (verified: re-running a completed company batch shows 0 pending)
+   - Snapshot-up-front pagination avoids skipping rows as the result set shrinks
+   - Fixed a `threading.Lock` reentrancy deadlock that froze the API during stop
+
+3. **AI Insights timeline endpoint + frontend**
+   - `GET /api/companies/{id}/ai-insights?metric=capex` — metric-filtered, datewise timeline
+   - New "AI Batch Analysis" card on company page: **Analyze This Company** / **Analyze All Companies** / **Stop** with live progress bar (polls every 2s)
+   - New "AI Insights Timeline" card: metric filter chips + datewise grouped insights with importance/sentiment/amount badges
+
+### Files Modified
+- `backend/data/storage/db.py` — `ai_insights` table + indexes + pending-AI partial index
+- `backend/app.py` — core refactor, batch job endpoints, ai-insights endpoint (~1,310 lines)
+- `frontend/index.html` — AI Batch + AI Insights cards and JS (~1,460 lines)
+
+### Test Results
+- Single-announcement generation stores structured `ai_insights` row (verified: Birla Cable financials, 2026-08-02)
+- Company batch (5 pending): 5 new, 0 failed; insights grouped by date + metric
+- Global batch: 238,521 pending detected; progress updates correctly; stop works cleanly
+- Re-run on completed company → 0 pending (incremental verified)
+- Documents endpoint + all existing endpoints still work; frontend JS passes `node --check`
+
+### Ready for Next Session
+- Changes uncommitted — commit + push to GitHub
+- Optionally trigger the full "Analyze All Companies" batch from the webpage (many hours)
+
+

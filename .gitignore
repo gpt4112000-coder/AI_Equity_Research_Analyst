@@ -42,3 +42,8 @@ nohup.out
 
 # Temp
 /tmp/
+
+# SQLite transient files (do not commit)
+*.db-shm
+*.db-wal
+*.db-journal

@@ -9,6 +9,8 @@ import json
 import re
 import httpx
 import uvicorn
+import threading
+import time
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
@@ -301,6 +303,195 @@ def get_company(company_id: int):
     }
 
 
+# ---- Documents section (Screener-style) ----
+_DOCS_CACHE = {}
+_DOCS_CACHE_TTL = 600  # 10 minutes
+
+
+def _classify_announcement(headline, attachment_url):
+    """Classify an announcement into documents buckets: annual report, credit rating, concall."""
+    text = f"{headline or ''} {attachment_url or ''}"
+    lower = text.lower()
+    kinds = set()
+    if "annual report" in lower or "_ar" in lower or "/annual_reports/" in lower:
+        kinds.add("annual_report")
+    if "credit rating" in lower or "rating update" in lower:
+        kinds.add("credit_rating")
+    if any(k in lower for k in ["concall", "con call", "investor meet", "institutional investor meet",
+                                "earnings call", "analyst meet", "transcript", "ppt", "presentation"]):
+        kinds.add("concall")
+    return kinds
+
+
+def _parse_agency(attachment_url):
+    """Extract rating agency from attachment URL."""
+    u = (attachment_url or "").upper()
+    for agency in ["CRISIL", "CARE", "ICRA", "BRICKWORK", "INDIA RATINGS", "FITCH"]:
+        if agency in u:
+            return agency.title()
+    return None
+
+
+@app.get("/api/companies/{company_id}/documents")
+def company_documents(company_id: int):
+    """Return Screener-style documents: announcements (recent/important/search/all),
+    annual reports (NSE + classified attachments), credit ratings, concalls."""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT id, company_name, nse_symbol, bse_code FROM companies WHERE id = ?", (company_id,))
+    company = cursor.fetchone()
+    if not company:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    company = dict(company)
+    symbol = company["nse_symbol"] or company["bse_code"] or ""
+
+    # ---- Announcements ----
+    cursor.execute("""
+        SELECT id, exchange, category, headline, description, announcement_date, attachment_url, ai_summary
+        FROM announcements WHERE company_id = ?
+        ORDER BY announcement_date DESC, id DESC
+        LIMIT 200
+    """, (company_id,))
+    anns = []
+    for r in cursor.fetchall():
+        row = dict(r)
+        parsed = None
+        if row.get("ai_summary"):
+            try:
+                parsed = json.loads(row["ai_summary"])
+            except Exception:
+                parsed = None
+        anns.append({
+            "id": row["id"],
+            "exchange": row["exchange"],
+            "category": row["category"],
+            "headline": row["headline"],
+            "description": row["description"],
+            "date": row["announcement_date"],
+            "attachment_url": row["attachment_url"],
+            "ai_summary": parsed,
+            "importance": (parsed or {}).get("importance") if parsed else None,
+            "sentiment": (parsed or {}).get("sentiment") if parsed else None,
+        })
+    conn.close()
+
+    # ---- Annual reports: NSE API (cached) + classified announcement attachments ----
+    annual_reports = []
+    nse_symbol = company.get("nse_symbol")
+    if nse_symbol:
+        cache_key = f"ar:{nse_symbol}"
+        now = __import__("time").time()
+        cached = _DOCS_CACHE.get(cache_key)
+        if cached and (now - cached["ts"]) < _DOCS_CACHE_TTL:
+            annual_reports = cached["data"]
+        else:
+            try:
+                import sys
+                sys.path.insert(0, "/home/ubuntu/FinEng/NseIndiaApi/src")
+                from nse.NSE import NSE
+                with NSE("/tmp/opencode/nse_docs") as nse:
+                    resp = nse.annual_reports(nse_symbol)
+                data = resp.get("data") or []
+                for item in data:
+                    fy = item.get("fromYr") or ""
+                    to = item.get("toYr") or ""
+                    annual_reports.append({
+                        "fy": f"FY {fy}-{to}" if fy and to else fy,
+                        "fromYr": fy,
+                        "toYr": to,
+                        "file_name": item.get("fileName"),
+                        "size": item.get("attFileSize"),
+                        "source": "nse",
+                    })
+                _DOCS_CACHE[cache_key] = {"ts": now, "data": annual_reports}
+            except Exception:
+                annual_reports = []
+
+    # Merge classified annual-report attachments from announcements (source: bse)
+    seen_fy = set()
+    for r in annual_reports:
+        if r["fromYr"]:
+            seen_fy.add(r["fromYr"])
+    ann_ars = [a for a in anns if "annual_report" in _classify_announcement(a["headline"], a["attachment_url"]) and a["attachment_url"]]
+    for a in ann_ars:
+        annual_reports.append({
+            "fy": (a["date"] or "")[:4],
+            "fromYr": (a["date"] or "")[:4],
+            "toYr": "",
+            "file_name": a["attachment_url"],
+            "size": None,
+            "source": "bse",
+            "date": a["date"],
+        })
+    # De-dupe by source+fromYr
+    dedup = {}
+    for r in annual_reports:
+        key = (r["source"], r["fromYr"])
+        dedup[key] = r
+    annual_reports = [dedup[k] for k in sorted(dedup, reverse=True)]
+
+    # ---- Credit ratings (from announcement DB) ----
+    credit_ratings = []
+    for a in anns:
+        if "credit_rating" in _classify_announcement(a["headline"], a["attachment_url"]):
+            credit_ratings.append({
+                "date": a["date"],
+                "headline": a["headline"],
+                "attachment_url": a["attachment_url"],
+                "agency": _parse_agency(a["attachment_url"]),
+                "ai_summary": a["ai_summary"],
+            })
+
+    # ---- Concalls (from announcement DB), grouped by quarter ----
+    concall_anns = [a for a in anns if "concall" in _classify_announcement(a["headline"], a["attachment_url"])]
+    quarter_map = {}
+    for a in concall_anns:
+        d = a["date"] or ""
+        year = d[:4]
+        month = int(d[5:7]) if len(d) >= 7 else 0
+        if not year:
+            continue
+        if 1 <= month <= 3:
+            q = "Q4"
+        elif 4 <= month <= 6:
+            q = "Q1"
+        elif 7 <= month <= 9:
+            q = "Q2"
+        else:
+            q = "Q3"
+        key = f"{year} {q}"
+        if key not in quarter_map:
+            quarter_map[key] = []
+        quarter_map[key].append(a)
+    concalls = []
+    for key in sorted(quarter_map, reverse=True):
+        assets = {"transcript": [], "ppt": [], "record": [], "other": []}
+        for a in quarter_map[key]:
+            url = (a["attachment_url"] or "").lower()
+            item = {"id": a["id"], "headline": a["headline"], "date": a["date"],
+                    "attachment_url": a["attachment_url"], "ai_summary": a["ai_summary"]}
+            if "transcript" in url:
+                assets["transcript"].append(item)
+            elif "ppt" in url or "presentation" in url:
+                assets["ppt"].append(item)
+            elif "rec" in url or url.endswith(".mp3") or url.endswith(".wav"):
+                assets["record"].append(item)
+            else:
+                assets["other"].append(item)
+        concalls.append({"quarter": key, **assets, "total": len(quarter_map[key])})
+
+    return {
+        "company": {"id": company_id, "name": company["company_name"], "symbol": symbol},
+        "announcements": anns,
+        "annual_reports": annual_reports,
+        "credit_ratings": credit_ratings,
+        "concalls": concalls,
+    }
+
+
 @app.get("/api/dashboard")
 def get_dashboard():
     return get_stats()
@@ -341,10 +532,61 @@ def get_stats():
     }
 
 
-@app.post("/api/announcements/{ann_id}/ai_summary")
-def generate_announcement_summary(ann_id: int):
-    """Generate and store AI summary for a single announcement."""
-    conn = get_db()
+def _parse_key_numbers(key_numbers):
+    """Extract (amount_in_crore, raw_text) from AI key_numbers list."""
+    if not key_numbers:
+        return None, None
+    for kn in key_numbers:
+        if not kn:
+            continue
+        t = str(kn)
+        m = re.search(r"([\d][\d,\.]*)\s*(cr|crore|lakh|lac|mn|million|bn|billion|k|thousand|%|x)?\b", t, re.I)
+        if not m:
+            continue
+        try:
+            num = float(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        unit = (m.group(2) or "").lower()
+        mult = {"cr": 1, "crore": 1, "lakh": 0.01, "lac": 0.01,
+                "mn": 0.1, "million": 0.1, "bn": 100, "billion": 100,
+                "k": 0.0001, "thousand": 0.0001}.get(unit, 1)
+        return round(num * mult, 4), t
+    return None, None
+
+
+def _store_ai_insights(cursor, row, summary):
+    """Insert one ai_insights row per category (metric) with date + parsed amount."""
+    company_id = row["company_id"]
+    ann_id = row["id"]
+    ann_date = row["announcement_date"] or ""
+    headline = (row["headline"] or "")[:300]
+    s = summary.get("summary") or ""
+    sentiment = summary.get("sentiment") or "neutral"
+    importance = summary.get("importance") or "medium"
+    categories = summary.get("categories") or ["general"]
+    amount, amount_text = _parse_key_numbers(summary.get("key_numbers") or [])
+    seen = set()
+    for cat in categories:
+        metric = str(cat).lower().strip()
+        if not metric or metric in seen:
+            continue
+        seen.add(metric)
+        try:
+            cursor.execute("""
+                INSERT OR IGNORE INTO ai_insights
+                (company_id, announcement_id, metric, announcement_date, headline,
+                 summary, amount, amount_text, sentiment, importance)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (company_id, ann_id, metric, ann_date, headline, s,
+                  amount, amount_text, sentiment, importance))
+        except Exception:
+            continue
+
+
+def _generate_announcement_summary_core(conn, ann_id):
+    """Generate + store AI summary and metric-wise insights for one announcement.
+    Returns (result_dict, is_new). Returns (None, False) if announcement not found."""
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -354,8 +596,7 @@ def generate_announcement_summary(ann_id: int):
     """, (ann_id,))
     row = cursor.fetchone()
     if not row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Announcement not found")
+        return None, False
 
     row = dict(row)
 
@@ -363,8 +604,7 @@ def generate_announcement_summary(ann_id: int):
     if row.get("ai_summary") and row["ai_summary"].strip():
         try:
             parsed = json.loads(row["ai_summary"])
-            conn.close()
-            return {"ann_id": ann_id, "summary": parsed}
+            return {"ann_id": ann_id, "summary": parsed}, False
         except json.JSONDecodeError:
             pass  # Fall through to regenerate
 
@@ -416,10 +656,23 @@ Respond in EXACTLY this JSON format (no other text):
         summary = {"summary": f"Error: {str(e)[:100]}", "categories": ["general"], "sentiment": "neutral", "key_numbers": [], "importance": "low", "date": row['announcement_date'] or '', "headline": (row['headline'] or '')[:100]}
 
     cursor.execute("UPDATE announcements SET ai_summary = ? WHERE id = ?", (json.dumps(summary), ann_id))
+    _store_ai_insights(cursor, row, summary)
     conn.commit()
-    conn.close()
 
-    return {"ann_id": ann_id, "summary": summary}
+    return {"ann_id": ann_id, "summary": summary}, True
+
+
+@app.post("/api/announcements/{ann_id}/ai_summary")
+def generate_announcement_summary(ann_id: int):
+    """Generate and store AI summary for a single announcement."""
+    conn = get_db()
+    try:
+        result, _is_new = _generate_announcement_summary_core(conn, ann_id)
+    finally:
+        conn.close()
+    if result is None:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    return result
 
 
 @app.post("/api/companies/{company_id}/generate_summaries")
@@ -682,6 +935,376 @@ def list_fetched_stocks():
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return {"stocks": rows}
+
+
+# ---------------------------------------------------------------------------
+# Peer Comparison (Screener-style)
+# ---------------------------------------------------------------------------
+
+COMPARE_METRICS = [
+    # ---- Valuation ----
+    {"id": "market_cap_cr", "label": "Market Cap (Cr)", "category": "Valuation",
+     "desc": "Market capitalization in ₹ Crore", "format": "cr"},
+    {"id": "current_price", "label": "Current Price", "category": "Valuation",
+     "desc": "Latest traded price (₹)", "format": "money"},
+    {"id": "pe_ratio", "label": "P/E Ratio", "category": "Valuation",
+     "desc": "Price to Earnings (trailing)", "format": "decimal2"},
+    {"id": "forward_pe", "label": "Forward P/E", "category": "Valuation",
+     "desc": "Forward price to earnings", "format": "decimal2"},
+    {"id": "peg_ratio", "label": "PEG", "category": "Valuation",
+     "desc": "P/E divided by earnings growth", "format": "decimal2"},
+    {"id": "pb_ratio", "label": "P/B Ratio", "category": "Valuation",
+     "desc": "Price to Book", "format": "decimal2"},
+    {"id": "ps_ratio", "label": "P/S Ratio", "category": "Valuation",
+     "desc": "Price to Sales", "format": "decimal2"},
+    {"id": "dividend_yield", "label": "Div Yield (%)", "category": "Valuation",
+     "desc": "Dividend yield as percentage", "format": "percent"},
+    {"id": "target_price", "label": "Analyst Target (₹)", "category": "Valuation",
+     "desc": "Average analyst price target", "format": "money"},
+    # ---- Profitability ----
+    {"id": "roe", "label": "ROE (%)", "category": "Profitability",
+     "desc": "Return on Equity", "format": "percent"},
+    {"id": "roce", "label": "ROCE (%)", "category": "Profitability",
+     "desc": "Return on Capital Employed", "format": "percent"},
+    {"id": "net_margin", "label": "Net Margin (%)", "category": "Profitability",
+     "desc": "Net profit margin", "format": "percent"},
+    {"id": "operating_margin", "label": "Op Margin (%)", "category": "Profitability",
+     "desc": "Operating profit margin", "format": "percent"},
+    {"id": "eps", "label": "EPS (₹)", "category": "Profitability",
+     "desc": "Earnings per share", "format": "money"},
+    {"id": "book_value", "label": "Book Value (₹)", "category": "Profitability",
+     "desc": "Book value per share", "format": "money"},
+    # ---- Leverage / Financial Health ----
+    {"id": "debt_to_equity", "label": "Debt/Equity", "category": "Leverage",
+     "desc": "Total debt to equity ratio", "format": "decimal2"},
+    {"id": "total_debt_cr", "label": "Total Debt (Cr)", "category": "Leverage",
+     "desc": "Total debt in ₹ Crore", "format": "cr"},
+    {"id": "total_cash_cr", "label": "Total Cash (Cr)", "category": "Leverage",
+     "desc": "Total cash in ₹ Crore", "format": "cr"},
+    # ---- Growth ----
+    {"id": "revenue_growth", "label": "Revenue Growth (%)", "category": "Growth",
+     "desc": "YoY revenue growth", "format": "percent"},
+    {"id": "earnings_growth", "label": "Earnings Growth (%)", "category": "Growth",
+     "desc": "YoY earnings growth", "format": "percent"},
+    # ---- Market / Technical ----
+    {"id": "beta", "label": "Beta", "category": "Market",
+     "desc": "Volatility vs market", "format": "decimal2"},
+    {"id": "sma_50", "label": "SMA 50 (₹)", "category": "Market",
+     "desc": "50 day moving average", "format": "money"},
+    {"id": "sma_200", "label": "SMA 200 (₹)", "category": "Market",
+     "desc": "200 day moving average", "format": "money"},
+    {"id": "week_52_high", "label": "52W High (₹)", "category": "Market",
+     "desc": "52 week high", "format": "money"},
+    {"id": "week_52_low", "label": "52W Low (₹)", "category": "Market",
+     "desc": "52 week low", "format": "money"},
+    {"id": "volume", "label": "Volume", "category": "Market",
+     "desc": "Trading volume", "format": "count"},
+    {"id": "avg_volume", "label": "Avg Volume", "category": "Market",
+     "desc": "Average trading volume", "format": "count"},
+    {"id": "promoter_holding", "label": "Promoter Hold (%)", "category": "Market",
+     "desc": "Promoter shareholding", "format": "percent"},
+    # ---- Company Activity (from our insights) ----
+    {"id": "total_announcements", "label": "Announcements", "category": "Activity",
+     "desc": "Total announcements in DB", "format": "count"},
+    {"id": "guidance_count", "label": "Guidance News", "category": "Activity",
+     "desc": "Guidance announcements", "format": "count"},
+    {"id": "order_count", "label": "Order Wins", "category": "Activity",
+     "desc": "Order announcements", "format": "count"},
+    {"id": "capex_count", "label": "Capex News", "category": "Activity",
+     "desc": "Capex announcements", "format": "count"},
+    {"id": "dividend_count", "label": "Dividend News", "category": "Activity",
+     "desc": "Dividend announcements", "format": "count"},
+    {"id": "sentiment_score", "label": "Sentiment Score", "category": "Activity",
+     "desc": "Positive minus negative (weighted)", "format": "decimal0"},
+]
+
+# In-memory cache for yfinance metrics (avoids hammering API)
+_compare_cache = {}
+_COMPARE_CACHE_TTL = 600  # 10 minutes
+
+
+@app.get("/api/compare/metrics")
+def compare_metrics_catalog():
+    """Return the catalog of available comparison metrics."""
+    categories = {}
+    for m in COMPARE_METRICS:
+        categories.setdefault(m["category"], []).append(m)
+    return {"categories": categories, "total": len(COMPARE_METRICS)}
+
+
+def _fetch_compare_metrics_for_symbol(symbol):
+    """Fetch metrics for a single symbol (yfinance + DB activity). Cached."""
+    global _compare_cache
+    now = __import__("time").time()
+    cached = _compare_cache.get(symbol)
+    if cached and (now - cached["ts"]) < _COMPARE_CACHE_TTL:
+        return cached["data"]
+
+    data = {"symbol": symbol.upper(), "company_name": symbol.upper(), "metrics": {}}
+
+    # 1) Live metrics from yfinance
+    try:
+        from data.collectors.yfinance_data import get_stock_info as fetch_info
+        info = fetch_info(symbol.upper())
+        if info:
+            m = data["metrics"]
+            if info.get("company_name"):
+                data["company_name"] = info["company_name"]
+            mc = info.get("market_cap")
+            m["market_cap_cr"] = round(mc / 1e7, 2) if mc else None
+            m["current_price"] = info.get("current_price") or info.get("previous_close")
+            m["pe_ratio"] = info.get("pe_ratio")
+            m["pb_ratio"] = info.get("pb_ratio")
+            # Dividend yield: yfinance returns it already as percentage
+            m["dividend_yield"] = info.get("dividend_yield")
+            m["eps"] = info.get("eps")
+            m["book_value"] = info.get("book_value")
+            m["debt_to_equity"] = info.get("debt_to_equity")
+            m["roe"] = round(info.get("roe", 0) * 100, 2) if info.get("roe") is not None else None
+            m["roce"] = round(info.get("roce", 0) * 100, 2) if info.get("roce") is not None else None
+            m["promoter_holding"] = round(info.get("promoter_holding", 0) * 100, 2) if info.get("promoter_holding") is not None else None
+            m["beta"] = info.get("beta")
+            m["sma_50"] = info.get("sma_50")
+            m["sma_200"] = info.get("sma_200")
+            m["week_52_high"] = info.get("52w_high")
+            m["week_52_low"] = info.get("52w_low")
+            m["volume"] = info.get("volume")
+            m["avg_volume"] = info.get("avg_volume")
+    except Exception:
+        pass
+
+    # 2) DB activity metrics (only for companies in our DB)
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT c.id, c.nse_symbol, cs.total_announcements
+            FROM companies c
+            LEFT JOIN company_summary cs ON c.id = cs.company_id
+            WHERE UPPER(COALESCE(c.nse_symbol,'')) = ? OR UPPER(COALESCE(c.bse_code,'')) = ?
+        """, (symbol.upper(), symbol.upper()))
+        row = cursor.fetchone()
+        if row:
+            cid = row["id"]
+            m = data["metrics"]
+            m["total_announcements"] = row["total_announcements"] or 0
+            cursor.execute("SELECT insight_type, COUNT(*) as cnt FROM announcement_insights WHERE company_id = ? GROUP BY insight_type", (cid,))
+            counts = {r["insight_type"]: r["cnt"] for r in cursor.fetchall()}
+            m["guidance_count"] = counts.get("guidance", 0)
+            m["order_count"] = counts.get("order", 0)
+            m["capex_count"] = counts.get("capex", 0)
+            m["dividend_count"] = counts.get("dividend", 0)
+            m["sentiment_score"] = counts.get("financial", 0)  # placeholder
+            cursor.execute("""
+                SELECT COALESCE(sentiment_positive,0) - COALESCE(sentiment_negative,0) as score
+                FROM company_summary WHERE company_id = ?
+            """, (cid,))
+            srow = cursor.fetchone()
+            if srow and srow["score"] is not None:
+                m["sentiment_score"] = srow["score"]
+            # company name from DB if yfinance failed
+            if not data["company_name"] or data["company_name"] == symbol.upper():
+                cursor.execute("SELECT company_name FROM companies WHERE id = ?", (cid,))
+                cname = cursor.fetchone()
+                if cname and cname["company_name"]:
+                    data["company_name"] = cname["company_name"]
+        conn.close()
+    except Exception:
+        pass
+
+    _compare_cache[symbol] = {"ts": now, "data": data}
+    return data
+
+
+@app.get("/api/compare/peers")
+def compare_peers(symbols: str):
+    """Compare metrics across multiple symbols. Fetch live from yfinance, cache 10 min."""
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    results = []
+    for sym in sym_list[:15]:
+        results.append(_fetch_compare_metrics_for_symbol(sym))
+    return {"companies": results, "count": len(results)}
+
+
+@app.get("/api/compare/sector-peers")
+def sector_peers(company_id: int, limit: int = 5):
+    """Return same-sector companies (with tradeable symbols) for auto peer comparison."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT sector, nse_symbol, bse_code, company_name, market_cap FROM companies WHERE id = ?", (company_id,))
+    base = cursor.fetchone()
+    if not base:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    sector = base["sector"]
+    base_sym = (base["nse_symbol"] or base["bse_code"] or "").upper()
+    peers = []
+    if sector:
+        cursor.execute("""
+            SELECT nse_symbol, bse_code, company_name, market_cap
+            FROM companies
+            WHERE sector = ? AND id != ?
+              AND ((nse_symbol IS NOT NULL AND nse_symbol != '') OR (bse_code IS NOT NULL AND bse_code != ''))
+            ORDER BY CASE WHEN nse_symbol IS NOT NULL AND nse_symbol != '' THEN 0 ELSE 1 END, market_cap DESC
+            LIMIT ?
+        """, (sector, company_id, max(1, min(limit, 10))))
+        for r in cursor.fetchall():
+            sym = (r["nse_symbol"] or r["bse_code"] or "").upper()
+            if not sym or sym == base_sym:
+                continue
+            peers.append({
+                "symbol": sym,
+                "company_name": r["company_name"],
+                "market_cap_cr": round(r["market_cap"] / 1e7, 2) if r["market_cap"] else 0,
+                "sector": sector,
+            })
+    conn.close()
+    return {"base_symbol": base_sym, "base_name": base["company_name"], "sector": sector, "peers": peers}
+
+
+# ---- AI Batch Analysis Job (background, incremental) ----
+_AI_BATCH = {
+    "running": False,
+    "company_id": None,
+    "scope": "all",
+    "total": 0,
+    "processed": 0,
+    "generated": 0,
+    "skipped": 0,
+    "failed": 0,
+    "current": "",
+    "started_at": None,
+    "finished_at": None,
+    "stop_requested": False,
+    "message": "",
+}
+_AI_BATCH_LOCK = threading.Lock()
+
+
+def _ai_batch_worker(company_id):
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        # Snapshot pending ids up front so pagination can't skip rows as the
+        # result set shrinks while we assign ai_summary.
+        if company_id:
+            cursor.execute("""
+                SELECT id FROM announcements
+                WHERE company_id = ? AND (ai_summary IS NULL OR ai_summary = '')
+                ORDER BY announcement_date DESC
+            """, (company_id,))
+        else:
+            cursor.execute("""
+                SELECT id FROM announcements
+                WHERE (ai_summary IS NULL OR ai_summary = '')
+                ORDER BY announcement_date DESC
+            """)
+        pending_ids = [r["id"] for r in cursor.fetchall()]
+        with _AI_BATCH_LOCK:
+            _AI_BATCH["total"] = len(pending_ids)
+            _AI_BATCH["processed"] = 0
+            _AI_BATCH["generated"] = 0
+            _AI_BATCH["skipped"] = 0
+            _AI_BATCH["failed"] = 0
+            _AI_BATCH["message"] = "Starting..."
+
+        processed = generated = skipped = failed = 0
+        for aid in pending_ids:
+            with _AI_BATCH_LOCK:
+                if _AI_BATCH["stop_requested"]:
+                    _AI_BATCH["message"] = "Stopped by user"
+                    _AI_BATCH["stop_requested"] = False
+                    break
+                _AI_BATCH["current"] = str(aid)
+            try:
+                result, is_new = _generate_announcement_summary_core(conn, aid)
+                if result is None:
+                    failed += 1
+                elif is_new:
+                    generated += 1
+                else:
+                    skipped += 1
+            except Exception:
+                failed += 1
+            processed += 1
+            with _AI_BATCH_LOCK:
+                _AI_BATCH["processed"] = processed
+                _AI_BATCH["generated"] = generated
+                _AI_BATCH["skipped"] = skipped
+                _AI_BATCH["failed"] = failed
+                _AI_BATCH["message"] = f"{processed}/{len(pending_ids)} processed"
+
+        with _AI_BATCH_LOCK:
+            _AI_BATCH["running"] = False
+            _AI_BATCH["finished_at"] = time.time()
+            if _AI_BATCH["message"] != "Stopped by user":
+                _AI_BATCH["message"] = f"Done: {generated} new, {skipped} existing, {failed} failed"
+    finally:
+        conn.close()
+
+
+@app.post("/api/ai/batch/start")
+def ai_batch_start(company_id: Optional[int] = None):
+    """Start a background batch AI analysis job. Only processes announcements that
+    do NOT yet have an ai_summary (incremental — never re-runs on already-read docs)."""
+    with _AI_BATCH_LOCK:
+        if _AI_BATCH["running"]:
+            return {"ok": False, "message": "A batch job is already running", "status": dict(_AI_BATCH)}
+        _AI_BATCH["running"] = True
+        _AI_BATCH["company_id"] = company_id
+        _AI_BATCH["scope"] = "company" if company_id else "all"
+        _AI_BATCH["started_at"] = time.time()
+        _AI_BATCH["finished_at"] = None
+        _AI_BATCH["stop_requested"] = False
+        _AI_BATCH["message"] = "Starting..."
+
+    t = threading.Thread(target=_ai_batch_worker, args=(company_id,), daemon=True)
+    t.start()
+    return {"ok": True, "message": "Batch started", "status": dict(_AI_BATCH)}
+
+
+@app.get("/api/ai/batch/status")
+def ai_batch_status():
+    with _AI_BATCH_LOCK:
+        return dict(_AI_BATCH)
+
+
+@app.post("/api/ai/batch/stop")
+def ai_batch_stop():
+    with _AI_BATCH_LOCK:
+        if not _AI_BATCH["running"]:
+            return {"ok": False, "message": "No batch job is running"}
+        _AI_BATCH["stop_requested"] = True
+    return {"ok": True, "message": "Stop requested"}
+
+
+@app.get("/api/companies/{company_id}/ai-insights")
+def company_ai_insights(company_id: int, metric: Optional[str] = None, limit: int = 200):
+    """Metric-wise, datewise AI insights timeline for a company."""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT DISTINCT metric FROM ai_insights WHERE company_id = ? ORDER BY metric", (company_id,))
+    metrics = [r["metric"] for r in cursor.fetchall()]
+
+    if metric:
+        cursor.execute("""
+            SELECT id, announcement_id, metric, announcement_date, headline, summary,
+                   amount, amount_text, sentiment, importance
+            FROM ai_insights WHERE company_id = ? AND metric = ?
+            ORDER BY announcement_date DESC, id DESC LIMIT ?
+        """, (company_id, metric, limit))
+    else:
+        cursor.execute("""
+            SELECT id, announcement_id, metric, announcement_date, headline, summary,
+                   amount, amount_text, sentiment, importance
+            FROM ai_insights WHERE company_id = ?
+            ORDER BY announcement_date DESC, id DESC LIMIT ?
+        """, (company_id, limit))
+    insights = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return {"company_id": company_id, "metrics": metrics, "metric": metric, "insights": insights}
 
 
 if __name__ == "__main__":

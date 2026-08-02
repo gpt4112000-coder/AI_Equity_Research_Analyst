@@ -58,6 +58,8 @@
         .date-input:focus{outline:none;border-color:#3b82f6}
         .amount-input{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:.4rem .6rem;color:#e2e8f0;font-size:.8rem;width:80px}
         .amount-input:focus{outline:none;border-color:#3b82f6}
+        .compare-table th,.compare-table td{white-space:nowrap}
+        .compare-table tr:hover td{background:#1e293b}
         .ann-item{padding:.6rem 0;border-bottom:1px solid #334155}
         .ann-item:last-child{border-bottom:none}
     </style>
@@ -270,7 +272,7 @@ function renderCompanies(el) {
             else if (c.bse_code) exch = 'BSE';
 
             html += '<tr onclick="navigate(\'company\',{companyId:' + c.id + '})">';
-            html += '<td><div style="font-weight:600">' + (c.company_name || '') + '</div><div class="muted" style="font-size:.7rem">' + sym + '</div></td>';
+            html += '<td><a href="/?company=' + c.id + '" onclick="event.stopPropagation();if(event.ctrlKey||event.metaKey||event.shiftKey||event.button!==0){return true;}navigate(\'company\',{companyId:' + c.id + '});return false;" style="text-decoration:none;color:inherit;cursor:pointer"><div style="font-weight:600">' + (c.company_name || '') + '</div><div class="muted" style="font-size:.7rem">' + sym + ' <span style="font-size:.65rem;color:#60a5fa" title="Open in new tab">↗</span></div></a></td>';
             html += '<td>₹' + (c.market_cap_cr ? c.market_cap_cr.toFixed(0) : '-') + ' Cr</td>';
             html += '<td><span class="sector-badge">' + (c.sector || 'other').replace(/_/g, ' ') + '</span></td>';
             html += '<td>' + exch + '</td>';
@@ -307,7 +309,6 @@ function renderCompany(el) {
 
     api('/companies/' + state.companyId).then(function(d) {
         var c = d.company;
-        var anns = d.announcements || [];
         var ins = d.insight_summary || [];
         var symbol = c.nse_symbol || c.bse_code || '';
 
@@ -429,16 +430,36 @@ function renderCompany(el) {
         }
         html += '</div>';
 
-        html += '<div class="card"><h3 style="margin-bottom:.5rem;font-size:.9rem">Recent Announcements</h3>';
-        html += '<div id="ann-list">';
-        if (anns.length) {
-            for (var i = 0; i < anns.length; i++) {
-                html += renderAnnouncement(anns[i]);
-            }
-        } else {
-            html += '<div class="muted">No announcements</div>';
-        }
+        html += '<div class="card" id="ai-batch-card">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;flex-wrap:wrap;gap:.5rem">';
+        html += '<h3 style="font-size:.9rem">AI Batch Analysis</h3>';
+        html += '<div style="display:flex;gap:.4rem">';
+        html += '<button class="btn btn-primary" id="ai-batch-company-btn" onclick="startAiBatch(' + c.id + ')">Analyze This Company</button>';
+        html += '<button class="btn btn-secondary" id="ai-batch-all-btn" onclick="startAiBatch()">Analyze All Companies</button>';
+        html += '<button class="btn btn-secondary" id="ai-batch-stop-btn" onclick="stopAiBatch()" style="display:none">Stop</button>';
         html += '</div></div>';
+        html += '<div id="ai-batch-progress" style="font-size:.75rem;color:#94a3b8">No batch job running.</div>';
+        html += '</div>';
+
+        html += '<div class="card" id="ai-insights-card">';
+        html += '<h3 style="margin-bottom:.5rem;font-size:.9rem">AI Insights Timeline</h3>';
+        html += '<div id="ai-insights-content" style="font-size:.8rem;color:#94a3b8">Loading AI insights...</div>';
+        html += '</div>';
+
+        html += '<div class="card" id="peer-compare-card">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.5rem">';
+        html += '<h3 style="font-size:.9rem">Peer Comparison</h3>';
+        html += '<div style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap">';
+        html += '<input type="text" id="peer-search" placeholder="Add stock (name or symbol)..." style="width:220px" onkeyup="if(event.key===\'Enter\'){addPeerStockByInput()}else{peerSearchInput(this.value)}">';
+        html += '<button class="btn btn-secondary" onclick="addPeerStockByInput()">Add</button>';
+        html += '</div></div>';
+        html += '<div id="peer-search-results" style="margin-bottom:.5rem"></div>';
+        html += '<div id="peer-compare-content" style="font-size:.8rem;color:#94a3b8">Loading comparison...</div>';
+        html += '</div>';
+
+        html += '<div class="card"><h3 style="margin-bottom:.5rem;font-size:.9rem">Documents</h3>';
+        html += '<div id="docs-container" style="font-size:.8rem;color:#94a3b8">Loading documents...</div>';
+        html += '</div>';
 
         el.innerHTML = html;
 
@@ -446,6 +467,10 @@ function renderCompany(el) {
             loadStockInfo(symbol);
         }
         loadSentimentTimeline(state.companyId);
+        loadPeerCompare(state.companyId, symbol);
+        loadDocuments(state.companyId);
+        loadAiInsights(state.companyId);
+        pollAiBatchStatus();
     }).catch(function(e) {
         el.innerHTML = '<div class="card">Error: ' + e.message + '</div>';
     });
@@ -697,6 +722,717 @@ function generateSummary(companyId) {
         btn.textContent = 'Generate Summary';
         btn.disabled = false;
     });
+}
+
+// ---------------------------------------------------------------------------
+// AI Batch Analysis + AI Insights Timeline
+// ---------------------------------------------------------------------------
+var aiInsightsState = { metric: null };
+
+function startAiBatch(companyId) {
+    var url = '/ai/batch/start';
+    if (companyId) url += '?company_id=' + companyId;
+    api(url, {method: 'POST'}).then(function(d) {
+        var prog = document.getElementById('ai-batch-progress');
+        if (prog) prog.innerHTML = '<div style="color:#60a5fa">' + (d.message || 'Started') + '</div>';
+        pollAiBatchStatus();
+    }).catch(function(e) {
+        var prog = document.getElementById('ai-batch-progress');
+        if (prog) prog.innerHTML = '<div style="color:#f87171">Error: ' + e.message + '</div>';
+    });
+}
+
+function stopAiBatch() {
+    api('/ai/batch/stop', {method: 'POST'}).then(function() {
+        pollAiBatchStatus();
+    }).catch(function() {});
+}
+
+function pollAiBatchStatus() {
+    api('/ai/batch/status').then(function(d) {
+        var prog = document.getElementById('ai-batch-progress');
+        var stopBtn = document.getElementById('ai-batch-stop-btn');
+        if (!prog) return;
+        var companyBtn = document.getElementById('ai-batch-company-btn');
+        var allBtn = document.getElementById('ai-batch-all-btn');
+
+        if (d.running) {
+            if (companyBtn) companyBtn.disabled = true;
+            if (allBtn) allBtn.disabled = true;
+            if (stopBtn) stopBtn.style.display = '';
+            var pct = d.total > 0 ? (d.processed / d.total * 100).toFixed(1) : '0';
+            prog.innerHTML = '<div style="margin-bottom:.4rem"><span class="spinner" style="width:12px;height:12px;border:2px solid #60a5fa;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;display:inline-block;vertical-align:middle"></span> ' +
+                '<span style="vertical-align:middle">Processing: ' + d.processed + ' / ' + d.total + ' (' + pct + '%) &mdash; ' + d.message + '</span></div>' +
+                '<div style="height:6px;background:#1e293b;border-radius:9999px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg,#60a5fa,#a78bfa);transition:width .5s"></div></div>';
+            setTimeout(pollAiBatchStatus, 2000);
+        } else {
+            if (companyBtn) companyBtn.disabled = false;
+            if (allBtn) allBtn.disabled = false;
+            if (stopBtn) stopBtn.style.display = 'none';
+            prog.innerHTML = '<div style="color:#94a3b8">' + (d.message || 'No batch job running.') + '</div>';
+            if (d.finished_at) {
+                loadAiInsights(state.companyId);
+            }
+        }
+    }).catch(function() {});
+}
+
+function loadAiInsights(companyId) {
+    var content = document.getElementById('ai-insights-content');
+    if (!content) return;
+    content.innerHTML = '<div style="color:#94a3b8">Loading AI insights...</div>';
+
+    var url = '/companies/' + companyId + '/ai-insights';
+    if (aiInsightsState.metric) url += '?metric=' + encodeURIComponent(aiInsightsState.metric);
+    api(url).then(function(d) {
+        renderAiInsights(d);
+    }).catch(function(e) {
+        content.innerHTML = '<div style="color:#f87171">Error: ' + e.message + '</div>';
+    });
+}
+
+function renderAiInsights(d) {
+    var content = document.getElementById('ai-insights-content');
+    if (!content) return;
+
+    var html = '<div style="display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.6rem">';
+    html += '<button class="btn ' + (!aiInsightsState.metric ? 'btn-primary' : 'btn-secondary') + '" onclick="setAiInsightMetric(null)" style="font-size:.68rem;padding:.2rem .6rem">All</button>';
+    for (var i = 0; i < d.metrics.length; i++) {
+        var m = d.metrics[i];
+        html += '<button class="btn ' + (aiInsightsState.metric === m ? 'btn-primary' : 'btn-secondary') + '" onclick="setAiInsightMetric(\'' + m.replace(/'/g, "\\'") + '\')" style="font-size:.68rem;padding:.2rem .6rem">' + m.replace(/_/g, ' ') + '</button>';
+    }
+    html += '</div>';
+
+    if (!d.insights.length) {
+        html += '<div class="muted">No AI insights yet. Run "Analyze This Company" or "Analyze All Companies" above.</div>';
+        content.innerHTML = html;
+        return;
+    }
+
+    html += '<div style="max-height:420px;overflow-y:auto">';
+    var lastDate = '';
+    for (var j = 0; j < d.insights.length; j++) {
+        var it = d.insights[j];
+        if (it.announcement_date !== lastDate) {
+            lastDate = it.announcement_date;
+            html += '<div style="margin:.5rem 0 .25rem;font-size:.72rem;font-weight:600;color:#60a5fa">' + (lastDate || 'Unknown') + '</div>';
+        }
+        var imp = it.importance || 'medium';
+        var impColor = imp === 'high' ? '#fbbf24' : imp === 'low' ? '#64748b' : '#94a3b8';
+        var sent = it.sentiment || 'neutral';
+        var sentColor = sent === 'positive' ? '#34d399' : sent === 'negative' ? '#f87171' : '#60a5fa';
+        html += '<div style="background:#0f172a;border-radius:6px;padding:.5rem .6rem;margin-bottom:.35rem">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:start;gap:.5rem">';
+        html += '<div style="font-weight:500;font-size:.75rem">' + (it.headline || '') + '</div>';
+        html += '<span class="sector-badge" style="font-size:.6rem;white-space:nowrap">' + it.metric.replace(/_/g, ' ') + '</span>';
+        html += '</div>';
+        if (it.summary) html += '<div style="font-size:.7rem;color:#c4b5fd;margin-top:.25rem;line-height:1.5">' + it.summary + '</div>';
+        html += '<div style="display:flex;gap:.4rem;margin-top:.25rem;flex-wrap:wrap">';
+        if (it.amount_text) html += '<span style="font-size:.65rem;color:#f59e0b">Amount: ' + it.amount_text + '</span>';
+        html += '<span style="font-size:.65rem;color:' + impColor + '">[' + imp.toUpperCase() + ']</span>';
+        html += '<span style="font-size:.65rem;color:' + sentColor + '">' + sent.toUpperCase() + '</span>';
+        html += '</div></div>';
+    }
+    html += '</div>';
+
+    content.innerHTML = html;
+}
+
+function setAiInsightMetric(metric) {
+    aiInsightsState.metric = metric;
+    loadAiInsights(state.companyId);
+}
+
+// ---------------------------------------------------------------------------
+// Peer Comparison (Screener-style)
+// ---------------------------------------------------------------------------
+var peerState = {
+    companyId: null,
+    baseSymbol: null,
+    symbols: [],          // list of comparison symbols (includes base)
+    metrics: null,        // cached metrics catalog
+    selectedMetrics: [],  // metric ids to show
+    searchResults: []
+};
+
+var PEER_STORAGE_KEY = 'peer_compare_';
+
+function getPeerStorage() {
+    try {
+        var raw = localStorage.getItem(PEER_STORAGE_KEY + peerState.companyId);
+        return raw ? JSON.parse(raw) : { symbols: [], metrics: [] };
+    } catch (e) {
+        return { symbols: [], metrics: [] };
+    }
+}
+
+function savePeerStorage() {
+    try {
+        localStorage.setItem(PEER_STORAGE_KEY + peerState.companyId,
+            JSON.stringify({ symbols: peerState.symbols, metrics: peerState.selectedMetrics }));
+    } catch (e) {}
+}
+
+function loadPeerCompare(companyId, symbol) {
+    peerState.companyId = companyId;
+    peerState.baseSymbol = symbol;
+
+    var stored = getPeerStorage();
+    var hasSaved = stored.symbols && stored.symbols.length;
+
+    // Load metrics catalog once
+    api('/compare/metrics').then(function(d) {
+        peerState.metrics = d.categories || {};
+        // Collect all metric ids
+        var allIds = [];
+        for (var cat in peerState.metrics) {
+            for (var i = 0; i < peerState.metrics[cat].length; i++) {
+                allIds.push(peerState.metrics[cat][i].id);
+            }
+        }
+        if (stored.metrics && stored.metrics.length) {
+            peerState.selectedMetrics = stored.metrics;
+        } else {
+            // Default selection: common valuation + profitability metrics
+            var defaults = ['market_cap_cr', 'pe_ratio', 'pb_ratio', 'roe', 'eps', 'dividend_yield', 'total_announcements', 'sentiment_score'];
+            peerState.selectedMetrics = defaults.filter(function(id) { return allIds.indexOf(id) !== -1; });
+        }
+
+        if (hasSaved) {
+            peerState.symbols = stored.symbols.slice();
+            renderPeerCompareUI();
+        } else {
+            // First visit: auto-populate with same-sector peers (Screener-style)
+            api('/compare/sector-peers?company_id=' + companyId + '&limit=5').then(function(sp) {
+                var syms = [];
+                if (symbol && symbol !== '') syms.push(symbol.toUpperCase());
+                var added = {};
+                if (symbol) added[symbol.toUpperCase()] = true;
+                for (var i = 0; i < (sp.peers || []).length && syms.length < 6; i++) {
+                    var ps = sp.peers[i].symbol;
+                    if (!added[ps]) {
+                        syms.push(ps);
+                        added[ps] = true;
+                    }
+                }
+                peerState.symbols = syms;
+                savePeerStorage();
+                renderPeerCompareUI();
+            }).catch(function() {
+                // Fallback: just the base company
+                peerState.symbols = (symbol && symbol !== '') ? [symbol.toUpperCase()] : [];
+                renderPeerCompareUI();
+            });
+        }
+    }).catch(function(e) {
+        var el = document.getElementById('peer-compare-content');
+        if (el) el.innerHTML = '<div class="muted">Error loading comparison: ' + e.message + '</div>';
+    });
+}
+
+function renderPeerCompareUI() {
+    var card = document.getElementById('peer-compare-card');
+    if (!card) return;
+
+    var symbols = peerState.symbols.slice();
+    // Ensure base company is first
+    if (peerState.baseSymbol && symbols.indexOf(peerState.baseSymbol) === -1) {
+        symbols.unshift(peerState.baseSymbol);
+    }
+    peerState.symbols = symbols;
+
+    var content = document.getElementById('peer-compare-content');
+    if (!content) return;
+
+    if (peerState.selectedMetrics.length === 0) {
+        content.innerHTML = '<div class="muted">Select metrics below to start comparing.</div>';
+        renderMetricPicker();
+        renderCompareTable();
+        return;
+    }
+
+    // Fetch live data for all symbols
+    content.innerHTML = '<div style="font-size:.8rem;color:#94a3b8">Fetching live data...</div>';
+
+    var url = '/compare/peers?symbols=' + encodeURIComponent(symbols.join(','));
+    api(url).then(function(d) {
+        peerState.peerData = d.companies || [];
+        renderMetricPicker();
+        renderCompareTable();
+    }).catch(function(e) {
+        content.innerHTML = '<div class="muted">Error: ' + e.message + '</div>';
+    });
+}
+
+function renderMetricPicker() {
+    var card = document.getElementById('peer-compare-card');
+    if (!card) return;
+    var existing = document.getElementById('peer-metric-picker');
+    if (existing) existing.remove();
+
+    if (!peerState.metrics) return;
+
+    var html = '<div id="peer-metric-picker" style="margin-bottom:1rem;padding:.75rem;background:#0f172a;border-radius:8px">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;flex-wrap:wrap;gap:.5rem">';
+    html += '<div style="font-size:.75rem;color:#94a3b8;font-weight:600">Metrics to compare:</div>';
+    html += '<div style="display:flex;gap:.4rem">';
+    html += '<button class="btn btn-secondary" style="font-size:.7rem;padding:.2rem .5rem" onclick="selectAllCompareMetrics()">Select All</button>';
+    html += '<button class="btn btn-secondary" style="font-size:.7rem;padding:.2rem .5rem" onclick="clearAllCompareMetrics()">Clear</button>';
+    html += '</div></div>';
+
+    for (var cat in peerState.metrics) {
+        var metrics = peerState.metrics[cat];
+        html += '<div style="margin-bottom:.4rem">';
+        html += '<div style="font-size:.68rem;color:#60a5fa;font-weight:600;text-transform:uppercase;margin-bottom:.2rem">' + cat + '</div>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:.3rem">';
+        for (var i = 0; i < metrics.length; i++) {
+            var m = metrics[i];
+            var checked = peerState.selectedMetrics.indexOf(m.id) !== -1;
+            html += '<label style="display:inline-flex;align-items:center;gap:.25rem;background:#1e293b;border:1px solid #334155;border-radius:6px;padding:.2rem .45rem;font-size:.7rem;cursor:pointer">';
+            html += '<input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="toggleCompareMetric(\'' + m.id + '\', this.checked)" style="cursor:pointer">';
+            html += m.label + '</label>';
+        }
+        html += '</div></div>';
+    }
+    html += '</div>';
+
+    // Insert picker right after the card header (before content)
+    var header = card.querySelector('.peer-head-row');
+    if (header && header.nextSibling) {
+        card.insertBefore(htmlToDom(html), header.nextSibling);
+    } else {
+        card.insertBefore(htmlToDom(html), contentElement());
+    }
+}
+
+function htmlToDom(html) {
+    var div = document.createElement('div');
+    div.innerHTML = html;
+    return div.firstChild;
+}
+
+function contentElement() {
+    return document.getElementById('peer-compare-content');
+}
+
+function toggleCompareMetric(id, checked) {
+    var idx = peerState.selectedMetrics.indexOf(id);
+    if (checked && idx === -1) peerState.selectedMetrics.push(id);
+    if (!checked && idx !== -1) peerState.selectedMetrics.splice(idx, 1);
+    savePeerStorage();
+    renderCompareTable();
+}
+
+function selectAllCompareMetrics() {
+    var allIds = [];
+    for (var cat in peerState.metrics) {
+        for (var i = 0; i < peerState.metrics[cat].length; i++) {
+            allIds.push(peerState.metrics[cat][i].id);
+        }
+    }
+    peerState.selectedMetrics = allIds;
+    savePeerStorage();
+    renderMetricPicker();
+    renderCompareTable();
+}
+
+function clearAllCompareMetrics() {
+    peerState.selectedMetrics = [];
+    savePeerStorage();
+    renderMetricPicker();
+    renderCompareTable();
+}
+
+function getMetricDef(id) {
+    for (var cat in peerState.metrics) {
+        for (var i = 0; i < peerState.metrics[cat].length; i++) {
+            if (peerState.metrics[cat][i].id === id) return peerState.metrics[cat][i];
+        }
+    }
+    return null;
+}
+
+function formatMetricValue(def, val) {
+    if (val === null || val === undefined || val === '') return '-';
+    if (def.format === 'money') return '₹' + Number(val).toLocaleString('en-IN', {maximumFractionDigits: 2});
+    if (def.format === 'cr') return '₹' + Number(val).toLocaleString('en-IN', {maximumFractionDigits: 0}) + ' Cr';
+    if (def.format === 'percent') return Number(val).toFixed(2) + '%';
+    if (def.format === 'decimal2') return Number(val).toFixed(2);
+    if (def.format === 'decimal0') return Number(val).toFixed(0);
+    if (def.format === 'count') return Number(val).toLocaleString('en-IN');
+    return val;
+}
+
+function metricValueColor(def, val) {
+    if (val === null || val === undefined) return '';
+    if (def.id === 'sentiment_score' || def.id === 'roe' || def.id === 'roce' ||
+        def.id === 'net_margin' || def.id === 'operating_margin' || def.id === 'revenue_growth' || def.id === 'earnings_growth') {
+        if (val > 0) return 'color:#34d399';
+        if (val < 0) return 'color:#f87171';
+    }
+    if (def.id === 'debt_to_equity' && val > 1.5) return 'color:#fbbf24';
+    return '';
+}
+
+function renderCompareTable() {
+    var content = document.getElementById('peer-compare-content');
+    if (!content) return;
+
+    var symbols = peerState.symbols.slice();
+    var data = peerState.peerData || [];
+    if (symbols.length === 1) {
+        content.innerHTML = '<div class="muted">Add more stocks to compare. Use the search box above.</div>';
+        renderStockList();
+        return;
+    }
+
+    var rows = [];
+    for (var i = 0; i < peerState.selectedMetrics.length; i++) {
+        rows.push(getMetricDef(peerState.selectedMetrics[i]));
+    }
+    rows = rows.filter(function(r) { return r; });
+
+    // Build header: Stock column + one column per metric
+    var html = '<div style="overflow-x:auto">';
+    html += '<table class="compare-table" style="border-collapse:collapse;width:100%;font-size:.78rem">';
+    html += '<thead><tr>';
+    html += '<th style="text-align:left;padding:.5rem;color:#94a3b8;border-bottom:1px solid #334155;min-width:160px;position:sticky;left:0;background:#1e293b">Stock</th>';
+    for (var i = 0; i < rows.length; i++) {
+        var def = rows[i];
+        html += '<th style="padding:.5rem;text-align:center;border-bottom:1px solid #334155;min-width:110px">';
+        html += '<div style="font-weight:600;font-size:.7rem">' + def.label + '</div>';
+        html += '<div style="font-size:.58rem;color:#64748b">' + def.desc + '</div>';
+        html += '</th>';
+    }
+    html += '</tr></thead><tbody>';
+
+    for (var c = 0; c < data.length; c++) {
+        var d = data[c];
+        var sym = d.symbol || symbols[c];
+        var isBase = sym === peerState.baseSymbol;
+        html += '<tr>';
+        html += '<td style="padding:.45rem;border-bottom:1px solid #1e293b;position:sticky;left:0;background:#0f172a">';
+        html += '<div style="font-weight:600">' + (d.company_name || sym) + '</div>';
+        html += '<div style="font-size:.65rem;color:#94a3b8">' + sym + '</div>';
+        if (isBase) html += '<div style="font-size:.6rem;color:#60a5fa;margin-top:.15rem">● This company</div>';
+        html += '<span style="cursor:pointer;font-size:.7rem;color:#f87171" title="Remove" onclick="removePeerStock(\'' + sym + '\')">✕</span>';
+        html += '</td>';
+        for (var r = 0; r < rows.length; r++) {
+            var def = rows[r];
+            var val = d.metrics ? d.metrics[def.id] : null;
+            var color = metricValueColor(def, val);
+            html += '<td style="padding:.45rem;text-align:center;border-bottom:1px solid #1e293b;' + color + '">';
+            html += formatMetricValue(def, val);
+            html += '</td>';
+        }
+        html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+
+    content.innerHTML = html;
+    renderStockList();
+}
+
+function renderStockList() {
+    var card = document.getElementById('peer-compare-card');
+    if (!card) return;
+    var existing = document.getElementById('peer-stock-list');
+    if (existing) existing.remove();
+
+    if (peerState.symbols.length < 2) return;
+
+    var html = '<div id="peer-stock-list" style="margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center">';
+    html += '<span style="font-size:.7rem;color:#94a3b8">Comparing:</span>';
+    for (var i = 0; i < peerState.symbols.length; i++) {
+        var sym = peerState.symbols[i];
+        var isBase = sym === peerState.baseSymbol;
+        html += '<span style="display:inline-flex;align-items:center;gap:.25rem;background:#1e293b;border:1px solid ' + (isBase ? '#60a5fa' : '#334155') + ';border-radius:6px;padding:.2rem .5rem;font-size:.7rem">';
+        html += sym;
+        if (!isBase) html += '<span style="cursor:pointer;color:#f87171;font-weight:600" onclick="removePeerStock(\'' + sym + '\')">✕</span>';
+        html += '</span>';
+    }
+    html += '</div>';
+
+    var content = document.getElementById('peer-compare-content');
+    if (content) content.insertAdjacentHTML('afterend', html);
+}
+
+function addPeerStock(symbol) {
+    var sym = symbol.toUpperCase().trim();
+    if (!sym) return;
+    if (peerState.symbols.indexOf(sym) !== -1) {
+        document.getElementById('peer-search-results').innerHTML = '<div class="muted" style="font-size:.75rem">' + sym + ' already in comparison.</div>';
+        return;
+    }
+    peerState.symbols.push(sym);
+    savePeerStorage();
+    document.getElementById('peer-search').value = '';
+    document.getElementById('peer-search-results').innerHTML = '';
+    renderPeerCompareUI();
+}
+
+function removePeerStock(symbol) {
+    var idx = peerState.symbols.indexOf(symbol);
+    if (idx !== -1) peerState.symbols.splice(idx, 1);
+    savePeerStorage();
+    renderPeerCompareUI();
+}
+
+function addPeerStockByInput() {
+    var input = document.getElementById('peer-search');
+    var val = input ? input.value : '';
+    if (!val.trim()) return;
+    addPeerStock(val.trim());
+}
+
+// Debounced search for add-stock dropdown
+var peerSearchTimer = null;
+function peerSearchInput(value) {
+    if (peerSearchTimer) clearTimeout(peerSearchTimer);
+    peerSearchTimer = setTimeout(function() { doPeerSearch(value); }, 250);
+}
+
+function doPeerSearch(value) {
+    var resultsEl = document.getElementById('peer-search-results');
+    if (!resultsEl) return;
+    if (!value || !value.trim()) {
+        resultsEl.innerHTML = '';
+        return;
+    }
+
+    api('/search-stock?q=' + encodeURIComponent(value.trim())).then(function(d) {
+        var results = d.results || [];
+        if (!results.length) {
+            resultsEl.innerHTML = '<div class="muted" style="font-size:.75rem">No matching companies. Try a symbol (e.g. RELIANCE).</div>';
+            return;
+        }
+        var html = '<div style="display:flex;flex-wrap:wrap;gap:.4rem">';
+        for (var i = 0; i < results.length; i++) {
+            var r = results[i];
+            var sym = r.symbol || r.nse_symbol || r.bse_code || '';
+            html += '<span style="display:inline-flex;align-items:center;gap:.4rem;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:.3rem .6rem;font-size:.75rem">';
+            html += '<div><div style="font-weight:600">' + (r.company_name || sym) + '</div><div class="muted" style="font-size:.65rem">' + sym + '</div></div>';
+            html += '<button class="btn btn-secondary" style="font-size:.65rem;padding:.15rem .4rem" onclick="addPeerStock(\'' + sym + '\')">+ Add</button>';
+            html += '</span>';
+        }
+        html += '</div>';
+        resultsEl.innerHTML = html;
+    }).catch(function(e) {
+        resultsEl.innerHTML = '<div class="muted" style="font-size:.75rem">Search error: ' + e.message + '</div>';
+    });
+}
+
+// ---- Documents section (Screener-style) ----
+var docsState = { tab: 'announcements', annFilter: 'recent', annQuery: '' };
+
+function loadDocuments(companyId) {
+    api('/companies/' + companyId + '/documents').then(function(d) {
+        docsState.data = d;
+        renderDocuments();
+    }).catch(function(e) {
+        var el = document.getElementById('docs-container');
+        if (el) el.innerHTML = '<div class="muted">Error loading documents: ' + e.message + '</div>';
+    });
+}
+
+function renderDocuments() {
+    var el = document.getElementById('docs-container');
+    if (!el || !docsState.data) return;
+    var d = docsState.data;
+
+    var html = '<div style="margin-bottom:.6rem;display:flex;flex-wrap:wrap;gap:.4rem;border-bottom:1px solid #334155;padding-bottom:.5rem">';
+    var tabs = [
+        { id: 'announcements', label: 'Announcements (' + d.announcements.length + ')' },
+        { id: 'annual_reports', label: 'Annual reports (' + d.annual_reports.length + ')' },
+        { id: 'credit_ratings', label: 'Credit ratings (' + d.credit_ratings.length + ')' },
+        { id: 'concalls', label: 'Concalls (' + d.concalls.length + ')' },
+    ];
+    for (var i = 0; i < tabs.length; i++) {
+        var t = tabs[i];
+        var cls = docsState.tab === t.id ? 'btn btn-primary' : 'btn btn-secondary';
+        html += '<button class="' + cls + '" style="font-size:.72rem;padding:.3rem .6rem" onclick="switchDocsTab(\'' + t.id + '\')">' + t.label + '</button>';
+    }
+    html += '</div>';
+
+    if (docsState.tab === 'announcements') html += renderAnnFilterBar(d) + renderAnnList(d.announcements);
+    else if (docsState.tab === 'annual_reports') html += renderAnnualReports(d.annual_reports);
+    else if (docsState.tab === 'credit_ratings') html += renderCreditRatings(d.credit_ratings);
+    else if (docsState.tab === 'concalls') html += renderConcalls(d.concalls);
+
+    el.innerHTML = html;
+}
+
+function switchDocsTab(tab) {
+    docsState.tab = tab;
+    renderDocuments();
+}
+
+function renderAnnFilterBar(d) {
+    var filters = [
+        { id: 'recent', label: 'Recent' },
+        { id: 'important', label: 'Important' },
+        { id: 'search', label: 'Search' },
+        { id: 'all', label: 'All' },
+    ];
+    var html = '<div style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin-bottom:.5rem">';
+    for (var i = 0; i < filters.length; i++) {
+        var f = filters[i];
+        var cls = docsState.annFilter === f.id ? 'btn btn-primary' : 'btn btn-secondary';
+        html += '<button class="' + cls + '" style="font-size:.68rem;padding:.2rem .5rem" onclick="setAnnFilter(\'' + f.id + '\')">' + f.label + '</button>';
+    }
+    if (docsState.annFilter === 'search') {
+        html += '<input type="text" id="ann-search" placeholder="Search announcements..." style="font-size:.72rem;padding:.3rem .5rem;background:#0f172a;border:1px solid #334155;border-radius:6px;color:#e2e8f0" oninput="setAnnQuery(this.value)">';
+    }
+    html += '</div>';
+    return html;
+}
+
+function setAnnFilter(f) {
+    docsState.annFilter = f;
+    docsState.annQuery = '';
+    renderDocuments();
+}
+
+function setAnnQuery(q) {
+    docsState.annQuery = q;
+    renderDocuments();
+}
+
+function renderAnnList(anns) {
+    var list = anns.slice();
+    if (docsState.annFilter === 'important') {
+        list = list.filter(function(a) {
+            if (a.importance) return a.importance === 'high';
+            var t = ((a.headline || '') + ' ' + (a.category || '')).toLowerCase();
+            return t.indexOf('result') !== -1 || t.indexOf('credit rating') !== -1 || t.indexOf('board meeting') !== -1;
+        });
+    } else if (docsState.annFilter === 'recent') {
+        list = list.slice(0, 20);
+    } else if (docsState.annFilter === 'search') {
+        var q = (docsState.annQuery || '').toLowerCase();
+        list = list.filter(function(a) {
+            return !q || (a.headline || '').toLowerCase().indexOf(q) !== -1 ||
+                   (a.category || '').toLowerCase().indexOf(q) !== -1 ||
+                   (a.description || '').toLowerCase().indexOf(q) !== -1;
+        });
+    }
+    if (!list.length) return '<div class="muted">No announcements found</div>';
+
+    var html = '';
+    for (var i = 0; i < list.length; i++) {
+        html += renderDocAnnouncement(list[i]);
+    }
+    return html;
+}
+
+function renderDocAnnouncement(a) {
+    var html = '<div class="ann-item">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:start;gap:.5rem">';
+    html += '<div style="font-weight:500;font-size:.8rem">' + (a.headline || 'No title') + '</div>';
+    html += '<span class="muted" style="font-size:.62rem;white-space:nowrap">' + (a.date || '') + '</span>';
+    html += '</div>';
+    html += '<div style="display:flex;gap:.4rem;align-items:center;margin-top:.15rem;flex-wrap:wrap">';
+    html += '<span class="muted" style="font-size:.65rem">' + (a.exchange || '') + ' | ' + (a.category || '') + '</span>';
+    if (a.ai_summary) {
+        var imp = a.ai_summary.importance || 'medium';
+        var impColor = imp === 'high' ? '#fbbf24' : imp === 'low' ? '#64748b' : '#94a3b8';
+        var sent = a.ai_summary.sentiment || 'neutral';
+        var sentColor = sent === 'positive' ? '#34d399' : sent === 'negative' ? '#f87171' : '#60a5fa';
+        html += '<span style="font-size:.62rem;color:' + impColor + '">[' + imp.toUpperCase() + ']</span>';
+        html += '<span style="font-size:.62rem;color:' + sentColor + '">' + sent.toUpperCase() + '</span>';
+    }
+    if (a.attachment_url) {
+        html += '<a href="' + a.attachment_url + '" target="_blank" rel="noopener" class="btn btn-secondary" style="font-size:.62rem;padding:.1rem .4rem;text-decoration:none">Attachment ↗</a>';
+    }
+    html += '</div>';
+    if (a.ai_summary && a.ai_summary.summary) {
+        html += '<div style="font-size:.7rem;color:#c4b5fd;margin-top:.25rem;line-height:1.5">' + a.ai_summary.summary + '</div>';
+    } else if (a.description) {
+        html += '<div style="font-size:.7rem;color:#64748b;margin-top:.15rem">' + a.description.substring(0, 180) + (a.description.length > 180 ? '...' : '') + '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function renderAnnualReports(ars) {
+    if (!ars.length) return '<div class="muted">No annual reports found</div>';
+    var html = '';
+    for (var i = 0; i < ars.length; i++) {
+        var ar = ars[i];
+        html += '<div class="ann-item" style="display:flex;justify-content:space-between;align-items:center;gap:.5rem">';
+        html += '<div>';
+        html += '<div style="font-weight:500;font-size:.8rem">' + (ar.fy || 'Annual Report') + '</div>';
+        html += '<div class="muted" style="font-size:.65rem">from ' + ar.source + (ar.size ? ' · ' + ar.size : '') + '</div>';
+        html += '</div>';
+        if (ar.file_name) {
+            html += '<a href="' + ar.file_name + '" target="_blank" rel="noopener" class="btn btn-secondary" style="font-size:.65rem;padding:.2rem .5rem;text-decoration:none">View PDF ↗</a>';
+        }
+        html += '</div>';
+    }
+    return html;
+}
+
+function renderCreditRatings(crs) {
+    if (!crs.length) return '<div class="muted">No credit ratings found</div>';
+    var html = '';
+    for (var i = 0; i < crs.length; i++) {
+        var cr = crs[i];
+        html += '<div class="ann-item" style="display:flex;justify-content:space-between;align-items:center;gap:.5rem">';
+        html += '<div>';
+        html += '<div style="font-weight:500;font-size:.8rem">Rating update</div>';
+        html += '<div class="muted" style="font-size:.65rem">' + (cr.date || '') + ' from ' + (cr.agency || 'nse/bse') + '</div>';
+        if (cr.ai_summary && cr.ai_summary.summary) {
+            html += '<div style="font-size:.7rem;color:#c4b5fd;margin-top:.2rem">' + cr.ai_summary.summary + '</div>';
+        }
+        html += '</div>';
+        if (cr.attachment_url) {
+            html += '<a href="' + cr.attachment_url + '" target="_blank" rel="noopener" class="btn btn-secondary" style="font-size:.65rem;padding:.2rem .5rem;text-decoration:none">View ↗</a>';
+        }
+        html += '</div>';
+    }
+    return html;
+}
+
+function renderConcalls(concalls) {
+    if (!concalls.length) return '<div class="muted">No concalls found</div>';
+    var html = '';
+    for (var i = 0; i < concalls.length; i++) {
+        var cc = concalls[i];
+        html += '<div class="ann-item">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center">';
+        html += '<div style="font-weight:600;font-size:.8rem">' + cc.quarter + '</div>';
+        html += '<span class="muted" style="font-size:.65rem">' + cc.total + ' documents</span>';
+        html += '</div>';
+        var assets = [
+            { key: 'transcript', label: 'Transcript', color: '#60a5fa' },
+            { key: 'ai_summary', label: 'AI Summary', color: '#a78bfa' },
+            { key: 'ppt', label: 'PPT', color: '#34d399' },
+            { key: 'record', label: 'REC', color: '#fbbf24' },
+            { key: 'other', label: 'Other', color: '#94a3b8' },
+        ];
+        var shown = false;
+        html += '<div style="display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.3rem">';
+        for (var j = 0; j < assets.length; j++) {
+            var as = assets[j];
+            var items = cc[as.key];
+            if (!items || !items.length) continue;
+            shown = true;
+            for (var k = 0; k < items.length; k++) {
+                var it = items[k];
+                var title = it.ai_summary && it.ai_summary.summary ? it.ai_summary.summary.substring(0, 60) : (it.headline || as.label);
+                html += '<span style="display:inline-flex;align-items:center;gap:.3rem;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:.2rem .45rem;font-size:.65rem">';
+                html += '<span style="color:' + as.color + ';font-weight:600">' + as.label + '</span>';
+                html += '<span class="muted">' + title + '</span>';
+                if (it.attachment_url) {
+                    html += '<a href="' + it.attachment_url + '" target="_blank" rel="noopener" style="color:#60a5fa;text-decoration:none">↗</a>';
+                }
+                html += '</span>';
+            }
+        }
+        if (!shown) html += '<span class="muted" style="font-size:.65rem">No assets</span>';
+        html += '</div></div>';
+    }
+    return html;
 }
 
 renderNav();
