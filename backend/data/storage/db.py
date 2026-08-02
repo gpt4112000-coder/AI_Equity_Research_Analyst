@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS announcements (
     announcement_date DATE NOT NULL,
     announcement_time TIME,
     is_critical INTEGER DEFAULT 0,
+    ai_summary TEXT,
     raw_data TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (company_id) REFERENCES companies(id)
@@ -69,7 +70,6 @@ CREATE INDEX IF NOT EXISTS idx_ann_date ON announcements(announcement_date);
 CREATE INDEX IF NOT EXISTS idx_ann_category ON announcements(category);
 CREATE INDEX IF NOT EXISTS idx_ann_exchange ON announcements(exchange);
 CREATE INDEX IF NOT EXISTS idx_ann_company_date ON announcements(company_id, announcement_date);
-CREATE INDEX IF NOT EXISTS idx_ann_pending_ai ON announcements(company_id) WHERE ai_summary IS NULL OR ai_summary = '';
 
 CREATE TABLE IF NOT EXISTS ai_insights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -206,6 +206,10 @@ def init_db():
     if "is_critical" not in cols:
         cursor.execute("ALTER TABLE announcements ADD COLUMN is_critical INTEGER DEFAULT 0")
         print("  Migration: added is_critical column to announcements")
+    # 1b) Add ai_summary column if missing (older schema)
+    if "ai_summary" not in cols:
+        cursor.execute("ALTER TABLE announcements ADD COLUMN ai_summary TEXT")
+        print("  Migration: added ai_summary column to announcements")
     # 2) Dedup existing rows (keep lowest id per company+date+headline)
     cursor.execute("""
         DELETE FROM announcements WHERE id NOT IN (
@@ -218,6 +222,9 @@ def init_db():
     existing = [r["name"] for r in cursor.execute("PRAGMA index_list(announcements)").fetchall()]
     if "idx_ann_unique" not in existing:
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ann_unique ON announcements(company_id, announcement_date, headline)")
+    # 4) Partial index for fast pending-AI lookups (needs ai_summary column, hence after migrations)
+    if "idx_ann_pending_ai" not in existing:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ann_pending_ai ON announcements(company_id) WHERE ai_summary IS NULL OR ai_summary = ''")
     conn.commit()
     conn.close()
     print("Database initialized successfully.")
