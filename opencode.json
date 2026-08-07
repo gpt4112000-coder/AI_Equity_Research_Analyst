@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "nse-bse-research": {
+      "type": "local",
+      "command": [
+        "/home/ubuntu/anaconda3/envs/BSE_NSE_Announcement/bin/python",
+        "backend/mcp_nse_bse_server.py"
+      ],
+      "enabled": true
+    }
+  }
+}

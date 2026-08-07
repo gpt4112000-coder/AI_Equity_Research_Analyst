@@ -6,6 +6,9 @@ BACKEND_DIR = BASE_DIR / "backend"
 DATA_DIR = BACKEND_DIR / "data"
 CACHE_DIR = DATA_DIR / "cache"
 DB_PATH = DATA_DIR / "equity_research.db"
+COMPANY_FILES_DIR = DATA_DIR / "company_files"
+
+BACKFILL_YEARS = 5
 
 EXISTING_DATA_DIR = Path("/home/ubuntu/FinEng/BseIndiaApi/src/examples/Bse_Nse_announcement_downloads")
 

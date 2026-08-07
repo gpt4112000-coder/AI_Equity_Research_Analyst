@@ -81,6 +81,8 @@ def run_daily_pipeline():
     conn.commit()
     print(f"  Database updated.")
 
+    _schedule_concall_processing(date_str)
+
     print(f"\n[{date_str}] Fetching price data for tracked companies...")
     cursor.execute("SELECT nse_symbol FROM companies WHERE nse_symbol IS NOT NULL")
     symbols = [r["nse_symbol"] for r in cursor.fetchall()]
@@ -105,6 +107,43 @@ def run_daily_pipeline():
     conn.close()
 
     print(f"\n[{datetime.now()}] Pipeline complete.")
+
+
+def _schedule_concall_processing(date_str):
+    """Queue + download + analyze any newly imported transcript announcements.
+
+    Runs in a background thread so the daily pipeline is not blocked. Uses the
+    shared concall_pipeline (OpenCode Zen LLM by default)."""
+    import threading as _t
+
+    def _run():
+        from concall_pipeline import recent_cutoff, ensure_queued, download_pending, analyze_downloaded
+        conn = get_db()
+        try:
+            cursor = conn.cursor()
+            cutoff = recent_cutoff(2)
+            # Companies that had a transcript announcement on this run date
+            cursor.execute(
+                "SELECT DISTINCT company_id FROM announcements WHERE announcement_date = ? "
+                "AND (lower(headline) LIKE '%concall%' OR lower(headline) LIKE '%transcript%' "
+                "OR lower(headline) LIKE '%con. call%' OR lower(headline) LIKE '%earnings call%' "
+                "OR category IN ('Earnings Call Transcript','Analyst / Investor Meet',"
+                "'Analysts/Institutional Investor Meet/Con. Call Updates'))",
+                (date_str,))
+            companies = [r["company_id"] for r in cursor.fetchall()]
+            print(f"  Concall hook: {len(companies)} companies with new transcript announcements")
+            for cid in companies:
+                try:
+                    ensure_queued(conn, cid, cutoff)
+                    download_pending(conn, cid, cutoff)
+                    analyze_downloaded(conn, cid)
+                    print(f"    concall hook company {cid}: done", flush=True)
+                except Exception as e:
+                    print(f"    concall hook company {cid}: error {str(e)[:120]}", flush=True)
+        finally:
+            conn.close()
+
+    _t.Thread(target=_run, daemon=True).start()
 
 
 if __name__ == "__main__":

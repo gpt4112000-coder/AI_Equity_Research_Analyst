@@ -3,6 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from data.storage.db import get_db, init_db
+from concall_pipeline import (
+    recent_cutoff, ensure_queued, download_pending, analyze_downloaded,
+)
 from typing import Optional
 from pathlib import Path
 import json
@@ -57,6 +60,7 @@ def list_companies(
     sentiment: str = None,
     min_amount: float = None,
     max_amount: float = None,
+    corporate_actions: int = None,
     sort_by: str = "market_cap",
     sort_order: str = "desc",
     limit: int = Query(50, le=500),
@@ -73,9 +77,15 @@ def list_companies(
                cs.has_financial_results, cs.financial_results_text,
                cs.has_dividend_news, cs.dividend_text,
                cs.sentiment_positive, cs.sentiment_negative, cs.sentiment_neutral,
-               cs.key_themes, cs.latest_announcement_date
+               cs.key_themes, cs.latest_announcement_date,
+               COALESCE(ca.ca_count, 0) as ca_count, ca.latest_ca_date
         FROM companies c
         LEFT JOIN company_summary cs ON c.id = cs.company_id
+        LEFT JOIN (
+            SELECT company_id, COUNT(*) as ca_count, MAX(announcement_date) as latest_ca_date
+            FROM announcements WHERE event_key IS NOT NULL
+            GROUP BY company_id
+        ) ca ON ca.company_id = c.id
         WHERE c.is_active = 1
     """
     params = []
@@ -137,6 +147,8 @@ def list_companies(
             query += " AND amount <= ?"
             params.append(max_amount)
         query += " GROUP BY company_id HAVING COUNT(*) > 0)"
+    if corporate_actions:
+        query += " AND ca.ca_count > 0"
 
     # Sorting
     sort_map = {
@@ -144,6 +156,7 @@ def list_companies(
         "announcements": "cs.total_announcements",
         "company": "c.company_name",
         "latest": "cs.latest_announcement_date",
+        "ca_latest": "ca.latest_ca_date",
         "sentiment": "(COALESCE(cs.sentiment_positive,0) - COALESCE(cs.sentiment_negative,0)) * 1.0 / MAX(COALESCE(cs.sentiment_positive,0) + COALESCE(cs.sentiment_negative,0) + COALESCE(cs.sentiment_neutral,0), 1)",
     }
     # For insight-specific sorts, add a subquery SELECT column
@@ -211,6 +224,8 @@ def list_companies(
             "sentiment_neutral": r['sentiment_neutral'] or 0,
             "key_themes": json.loads(r['key_themes']) if r['key_themes'] else [],
             "latest_announcement": r['latest_announcement_date'],
+            "ca_count": r['ca_count'] or 0,
+            "latest_ca_date": r['latest_ca_date'],
         })
 
     return {"companies": companies, "total": total, "limit": limit, "offset": offset}
@@ -282,6 +297,27 @@ def get_company(company_id: int):
     """, (company_id,))
     insight_summary = [dict(row) for row in cursor.fetchall()]
 
+    # Analysis status (used by UI to auto-start/reflect stored insights)
+    cursor.execute("""
+        SELECT COUNT(*) FROM announcements
+        WHERE company_id = ? AND (ai_summary IS NULL OR ai_summary = '')
+    """, (company_id,))
+    ai_pending = cursor.fetchone()[0]
+    cursor.execute("""
+        SELECT COUNT(*) FROM company_files
+        WHERE company_id = ? AND status = 'done' AND analyzed = 0
+    """, (company_id,))
+    doc_pending = cursor.fetchone()[0]
+    cursor.execute("""
+        SELECT COUNT(*) FROM company_files
+        WHERE company_id = ? AND status = 'done'
+    """, (company_id,))
+    doc_done = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM ai_insights WHERE company_id = ?", (company_id,))
+    ai_insight_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM document_insights WHERE company_id = ?", (company_id,))
+    doc_insight_count = cursor.fetchone()[0]
+
     conn.close()
 
     # Get stored company-level AI summary
@@ -295,6 +331,13 @@ def get_company(company_id: int):
         "company": company,
         "announcements": announcements,
         "insight_summary": insight_summary,
+        "analysis_status": {
+            "ai_pending": ai_pending,
+            "doc_pending": doc_pending,
+            "doc_done": doc_done,
+            "ai_insight_count": ai_insight_count,
+            "doc_insight_count": doc_insight_count,
+        },
         "company_ai_summary": {
             "summary": stored_summary["summary"] if stored_summary else None,
             "announcements_used": stored_summary["announcements_used"] if stored_summary else 0,
@@ -308,17 +351,24 @@ _DOCS_CACHE = {}
 _DOCS_CACHE_TTL = 600  # 10 minutes
 
 
-def _classify_announcement(headline, attachment_url):
-    """Classify an announcement into documents buckets: annual report, credit rating, concall."""
-    text = f"{headline or ''} {attachment_url or ''}"
-    lower = text.lower()
+def _classify_announcement(row):
+    """Classify an announcement into documents buckets (annual report, credit
+    rating, concall). Prefers structured API category/subcategory/event_key;
+    falls back to headline + attachment-URL regex for legacy rows."""
+    cat = (row.get("category") or "").lower()
+    sub = (row.get("subcategory") or "").lower()
+    event = (row.get("event_key") or "").lower()
+    text = f"{row.get('headline') or ''} {row.get('attachment_url') or ''}".lower()
     kinds = set()
-    if "annual report" in lower or "_ar" in lower or "/annual_reports/" in lower:
+    if "annual_report" in event or cat == "annual report" or "annual report" in sub \
+            or "annual_report" in text or "_ar" in text or "/annual_reports/" in text:
         kinds.add("annual_report")
-    if "credit rating" in lower or "rating update" in lower:
+    if "credit_rating" in event or "credit rating" in cat or "credit rating" in sub \
+            or "credit rating" in text or "rating update" in text:
         kinds.add("credit_rating")
-    if any(k in lower for k in ["concall", "con call", "investor meet", "institutional investor meet",
-                                "earnings call", "analyst meet", "transcript", "ppt", "presentation"]):
+    if "concall" in event or any(k in text for k in ["concall", "con call", "investor meet",
+                                                     "institutional investor meet", "earnings call",
+                                                     "analyst meet", "transcript", "ppt", "presentation"]):
         kinds.add("concall")
     return kinds
 
@@ -350,7 +400,8 @@ def company_documents(company_id: int):
 
     # ---- Announcements ----
     cursor.execute("""
-        SELECT id, exchange, category, headline, description, announcement_date, attachment_url, ai_summary
+        SELECT id, exchange, category, subcategory, headline, description, announcement_date,
+               attachment_url, ai_summary, event_key
         FROM announcements WHERE company_id = ?
         ORDER BY announcement_date DESC, id DESC
         LIMIT 200
@@ -368,15 +419,61 @@ def company_documents(company_id: int):
             "id": row["id"],
             "exchange": row["exchange"],
             "category": row["category"],
+            "subcategory": row["subcategory"],
             "headline": row["headline"],
             "description": row["description"],
             "date": row["announcement_date"],
             "attachment_url": row["attachment_url"],
+            "event_key": row["event_key"],
             "ai_summary": parsed,
             "importance": (parsed or {}).get("importance") if parsed else None,
             "sentiment": (parsed or {}).get("sentiment") if parsed else None,
         })
-    conn.close()
+    # ---- Announcement-type breakdown (full DB counts, for the filter chips) ----
+    cursor.execute("""
+        SELECT
+          CASE
+            WHEN event_key IS NOT NULL AND event_key LIKE 'ca:%' THEN 'corporate_action'
+            WHEN LOWER(COALESCE(category,'')) LIKE '%result%'
+                 OR LOWER(COALESCE(category,'')) LIKE '%financial%' THEN 'financial_result'
+            WHEN LOWER(COALESCE(category,'')) LIKE '%board%' THEN 'board_meeting'
+            WHEN LOWER(COALESCE(category,'')) LIKE '%credit%' THEN 'credit_rating'
+            WHEN LOWER(COALESCE(category,'')) LIKE '%general%' THEN 'general'
+            ELSE 'other'
+          END AS family,
+          COUNT(*) AS cnt
+        FROM announcements
+        WHERE company_id = ?
+        GROUP BY family
+    """, (company_id,))
+    type_counts = {r["family"]: r["cnt"] for r in cursor.fetchall()}
+
+    # ---- Corporate actions (mirrored event_key announcements, full list) ----
+    cursor.execute("""
+        SELECT id, exchange, category, subcategory, headline, announcement_date, ai_summary
+        FROM announcements
+        WHERE company_id = ? AND event_key IS NOT NULL AND event_key LIKE 'ca:%'
+        ORDER BY announcement_date DESC, id DESC LIMIT 100
+    """, (company_id,))
+    corporate_actions = []
+    for r in cursor.fetchall():
+        row = dict(r)
+        parsed = None
+        if row.get("ai_summary"):
+            try:
+                parsed = json.loads(row["ai_summary"])
+            except Exception:
+                parsed = None
+        corporate_actions.append({
+            "id": row["id"],
+            "exchange": row["exchange"],
+            "category": row["category"],
+            "family": (row["category"] or "").replace("Corporate Action - ", "").strip(),
+            "subcategory": row["subcategory"],
+            "headline": row["headline"],
+            "date": row["announcement_date"],
+            "ai_summary": parsed,
+        })
 
     # ---- Annual reports: NSE API (cached) + classified announcement attachments ----
     annual_reports = []
@@ -415,7 +512,7 @@ def company_documents(company_id: int):
     for r in annual_reports:
         if r["fromYr"]:
             seen_fy.add(r["fromYr"])
-    ann_ars = [a for a in anns if "annual_report" in _classify_announcement(a["headline"], a["attachment_url"]) and a["attachment_url"]]
+    ann_ars = [a for a in anns if "annual_report" in _classify_announcement(a) and a["attachment_url"]]
     for a in ann_ars:
         annual_reports.append({
             "fy": (a["date"] or "")[:4],
@@ -436,7 +533,7 @@ def company_documents(company_id: int):
     # ---- Credit ratings (from announcement DB) ----
     credit_ratings = []
     for a in anns:
-        if "credit_rating" in _classify_announcement(a["headline"], a["attachment_url"]):
+        if "credit_rating" in _classify_announcement(a):
             credit_ratings.append({
                 "date": a["date"],
                 "headline": a["headline"],
@@ -445,8 +542,23 @@ def company_documents(company_id: int):
                 "ai_summary": a["ai_summary"],
             })
 
-    # ---- Concalls (from announcement DB), grouped by quarter ----
-    concall_anns = [a for a in anns if "concall" in _classify_announcement(a["headline"], a["attachment_url"])]
+    # ---- Concalls (from announcement DB + stored AI summaries), grouped by quarter ----
+    cc_map = {}
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT announcement_id, summary, guidance, management_views, qna_summary,
+                  key_topics, sentiment, importance, status
+           FROM concalls WHERE company_id = ?""",
+        (company_id,))
+    for r in cursor.fetchall():
+        cc_map[r["announcement_id"]] = {
+            "summary": r["summary"], "guidance": r["guidance"],
+            "management_views": r["management_views"], "qna_summary": r["qna_summary"],
+            "key_topics": _safe_json_list(r["key_topics"]),
+            "sentiment": r["sentiment"], "importance": r["importance"],
+            "status": r["status"],
+        }
+    concall_anns = [a for a in anns if "concall" in _classify_announcement(a)]
     quarter_map = {}
     for a in concall_anns:
         d = a["date"] or ""
@@ -469,10 +581,15 @@ def company_documents(company_id: int):
     concalls = []
     for key in sorted(quarter_map, reverse=True):
         assets = {"transcript": [], "ppt": [], "record": [], "other": []}
+        analyzed = 0
         for a in quarter_map[key]:
             url = (a["attachment_url"] or "").lower()
+            cc = cc_map.get(a["id"], {})
+            if cc.get("status") == "done":
+                analyzed += 1
             item = {"id": a["id"], "headline": a["headline"], "date": a["date"],
-                    "attachment_url": a["attachment_url"], "ai_summary": a["ai_summary"]}
+                    "attachment_url": a["attachment_url"], "ai_summary": a["ai_summary"],
+                    "concall": cc}
             if "transcript" in url:
                 assets["transcript"].append(item)
             elif "ppt" in url or "presentation" in url:
@@ -481,14 +598,19 @@ def company_documents(company_id: int):
                 assets["record"].append(item)
             else:
                 assets["other"].append(item)
-        concalls.append({"quarter": key, **assets, "total": len(quarter_map[key])})
+        concalls.append({"quarter": key, **assets, "total": len(quarter_map[key]),
+                         "analyzed": analyzed})
 
+    # ---- Announcement-type breakdown (full DB counts, for the filter chips) ----
+    conn.close()
     return {
         "company": {"id": company_id, "name": company["company_name"], "symbol": symbol},
         "announcements": anns,
         "annual_reports": annual_reports,
         "credit_ratings": credit_ratings,
         "concalls": concalls,
+        "corporate_actions": corporate_actions,
+        "type_counts": type_counts,
     }
 
 
@@ -652,8 +774,10 @@ Respond in EXACTLY this JSON format (no other text):
         summary.setdefault("sentiment", "neutral")
         summary.setdefault("key_numbers", [])
         summary.setdefault("importance", "medium")
-    except Exception as e:
-        summary = {"summary": f"Error: {str(e)[:100]}", "categories": ["general"], "sentiment": "neutral", "key_numbers": [], "importance": "low", "date": row['announcement_date'] or '', "headline": (row['headline'] or '')[:100]}
+    except Exception:
+        # Leave ai_summary NULL so the announcement stays pending and is
+        # retried on the next batch run (resume-where-left-off).
+        return None, False
 
     cursor.execute("UPDATE announcements SET ai_summary = ? WHERE id = ?", (json.dumps(summary), ann_id))
     _store_ai_insights(cursor, row, summary)
@@ -667,49 +791,18 @@ def generate_announcement_summary(ann_id: int):
     """Generate and store AI summary for a single announcement."""
     conn = get_db()
     try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM announcements WHERE id = ?", (ann_id,))
+        exists = cursor.fetchone() is not None
         result, _is_new = _generate_announcement_summary_core(conn, ann_id)
     finally:
         conn.close()
-    if result is None:
+    if not exists:
         raise HTTPException(status_code=404, detail="Announcement not found")
+    if result is None:
+        return {"ok": False, "announcement_id": ann_id,
+                "message": "AI generation failed (Ollama unreachable or timeout). It stays pending and will be retried on the next batch run."}
     return result
-
-
-@app.post("/api/companies/{company_id}/generate_summaries")
-def generate_missing_summaries(company_id: int):
-    """Generate AI summaries for announcements that don't have one yet. Skips existing."""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id FROM announcements
-        WHERE company_id = ? AND (ai_summary IS NULL OR ai_summary = '')
-        ORDER BY announcement_date DESC
-    """, (company_id,))
-    ids = [r["id"] for r in cursor.fetchall()]
-
-    # Also count how many already have summaries
-    cursor.execute("""
-        SELECT COUNT(*) FROM announcements
-        WHERE company_id = ? AND ai_summary IS NOT NULL AND ai_summary != ''
-    """, (company_id,))
-    already_done = cursor.fetchone()[0]
-    conn.close()
-
-    results = []
-    for ann_id in ids:
-        try:
-            r = generate_announcement_summary(ann_id)
-            results.append(r)
-        except Exception:
-            pass
-
-    return {
-        "company_id": company_id,
-        "generated": len(results),
-        "already_done": already_done,
-        "remaining": len(ids) - len(results),
-        "results": results,
-    }
 
 
 @app.get("/api/companies/{company_id}/ai_summary")
@@ -1279,6 +1372,419 @@ def ai_batch_stop():
     return {"ok": True, "message": "Stop requested"}
 
 
+# ---- Document AI Analysis Job (background, on-demand per company) ----
+_DOC_BATCH = {
+    "running": False,
+    "company_id": None,
+    "total": 0,
+    "processed": 0,
+    "generated": 0,
+    "failed": 0,
+    "current": "",
+    "started_at": None,
+    "finished_at": None,
+    "stop_requested": False,
+    "message": "",
+}
+_DOC_BATCH_LOCK = threading.Lock()
+
+DOC_PROMPT = """Analyze this Indian corporate document content and extract structured investment insights.
+
+Company: {company_name} ({symbol})
+Document kind: {kind}
+Announcement date: {ann_date}
+Headline: {headline}
+
+CONTENT:
+{content}
+
+Respond in EXACTLY this JSON (no other text):
+{{
+  "metrics": [
+    {{
+      "metric": "capex" | "guidance" | "orders" | "financials" | "dividend" | "acquisition" | "management" | "regulatory" | "credit_rating",
+      "summary": "1-2 sentence factual summary with specific numbers, dates, amounts",
+      "amount": number in crore (or null),
+      "amount_text": "raw amount text as stated",
+      "sentiment": "positive" | "negative" | "neutral",
+      "importance": "high" | "medium" | "low"
+    }}
+  ]
+}}
+
+Rules:
+- Extract only facts stated in the content. Do not invent.
+- If the document mentions revenue/profit/orders/capex amounts, capture them.
+- Use Indian crore scale for amounts (convert lakh->0.01, million->0.1, billion->100).
+- Keep total under 400 words.
+"""
+
+
+def _doc_extract_text(path, max_pages=40):
+    """Extract readable text from a downloaded PDF/txt/html file."""
+    p = Path(path)
+    ext = p.suffix.lower()
+    if ext == ".pdf":
+        try:
+            import fitz
+            parts = []
+            doc = fitz.open(str(p))
+            for i, page in enumerate(doc):
+                if i >= max_pages:
+                    break
+                parts.append(page.get_text())
+            doc.close()
+            return "\n".join(parts)
+        except Exception:
+            return ""
+    if ext in (".txt", ".htm", ".html"):
+        try:
+            return p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return ""
+    return ""
+
+
+def _doc_chunk_text(text, max_chars=12000):
+    text = text.strip()
+    if not text:
+        return []
+    chunks = []
+    while len(text) > max_chars:
+        cut = text.rfind("\n", 0, max_chars)
+        if cut < max_chars // 2:
+            cut = max_chars
+        chunks.append(text[:cut])
+        text = text[cut:]
+    if text:
+        chunks.append(text)
+    return chunks
+
+
+def _doc_call_ollama(prompt):
+    resp = httpx.post(
+        "http://localhost:11434/api/generate",
+        json={"model": "qwen2.5:3b", "prompt": prompt, "stream": False,
+              "options": {"temperature": 0.2, "num_predict": 700}},
+        timeout=120.0,
+    )
+    raw = resp.json().get("response", "")
+    start = raw.find("{")
+    end = raw.rfind("}") + 1
+    if start >= 0 and end > start:
+        return json.loads(raw[start:end])
+    return None
+
+
+def _analyze_doc_file(conn, row):
+    """Analyze one company_files row. Returns (insights_list, had_content, headline, ann_date)."""
+    cursor = conn.cursor()
+    local_path = row["local_path"]
+    if not local_path or not Path(local_path).exists():
+        return [], False, None, None
+    company_id = row["company_id"]
+
+    cursor.execute("SELECT company_name, nse_symbol, bse_code FROM companies WHERE id=?", (company_id,))
+    c = cursor.fetchone()
+    if not c:
+        return [], False, None, None
+    company_name = c["company_name"]
+    symbol = c["nse_symbol"] or c["bse_code"] or ""
+
+    ann_date = headline = ""
+    if row["announcement_id"]:
+        cursor.execute("SELECT announcement_date, headline FROM announcements WHERE id=?", (row["announcement_id"],))
+        a = cursor.fetchone()
+        if a:
+            ann_date = a["announcement_date"] or ""
+            headline = (a["headline"] or "")[:300]
+
+    text = _doc_extract_text(local_path)
+    if not text or len(text) < 50:
+        return [], False, headline or None, ann_date or None
+
+    insights = []
+    for chunk in _doc_chunk_text(text):
+        prompt = DOC_PROMPT.format(
+            company_name=company_name, symbol=symbol, kind=row.get("kind") or "general",
+            ann_date=ann_date or "Unknown", headline=headline or "(none)", content=chunk)
+        try:
+            parsed = _doc_call_ollama(prompt)
+            if parsed and isinstance(parsed.get("metrics"), list):
+                for m in parsed["metrics"]:
+                    if not isinstance(m, dict) or not m.get("metric"):
+                        continue
+                    insights.append({
+                        "metric": str(m["metric"]).strip().lower(),
+                        "summary": (m.get("summary") or "")[:600],
+                        "amount": m.get("amount"),
+                        "amount_text": (m.get("amount_text") or "")[:100],
+                        "sentiment": (m.get("sentiment") or "neutral"),
+                        "importance": (m.get("importance") or "medium"),
+                    })
+            time.sleep(0.5)
+        except Exception:
+            time.sleep(1)
+    return insights, True, headline or None, ann_date or None
+
+
+def _doc_batch_worker(company_id):
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, company_id, announcement_id, kind, local_path, status
+            FROM company_files
+            WHERE company_id = ? AND status = 'done' AND analyzed = 0
+            ORDER BY id
+        """, (company_id,))
+        rows = [dict(r) for r in cursor.fetchall()]
+        with _DOC_BATCH_LOCK:
+            _DOC_BATCH["total"] = len(rows)
+            _DOC_BATCH["processed"] = 0
+            _DOC_BATCH["generated"] = 0
+            _DOC_BATCH["failed"] = 0
+            _DOC_BATCH["message"] = "Starting..."
+
+        processed = generated = failed = 0
+        for row in rows:
+            with _DOC_BATCH_LOCK:
+                if _DOC_BATCH["stop_requested"]:
+                    _DOC_BATCH["message"] = "Stopped by user"
+                    _DOC_BATCH["stop_requested"] = False
+                    break
+                _DOC_BATCH["current"] = f"{row['id']} ({row['kind'] or 'general'})"
+            try:
+                insights, had_content, headline, ann_date = _analyze_doc_file(conn, row)
+                cursor.execute("UPDATE company_files SET analyzed=1 WHERE id=?", (row["id"],))
+                for ins in insights:
+                    try:
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO document_insights
+                            (company_id, file_id, announcement_id, metric, insight_date,
+                             headline, summary, amount, amount_text, sentiment, importance)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (row["company_id"], row["id"], row["announcement_id"],
+                              ins["metric"], ann_date, headline,
+                              ins["summary"], ins["amount"], ins["amount_text"],
+                              ins["sentiment"], ins["importance"]))
+                        generated += 1
+                    except Exception:
+                        continue
+                conn.commit()
+            except Exception:
+                failed += 1
+            processed += 1
+            with _DOC_BATCH_LOCK:
+                _DOC_BATCH["processed"] = processed
+                _DOC_BATCH["generated"] = generated
+                _DOC_BATCH["failed"] = failed
+                _DOC_BATCH["message"] = f"{processed}/{len(rows)} processed"
+
+        with _DOC_BATCH_LOCK:
+            _DOC_BATCH["running"] = False
+            _DOC_BATCH["finished_at"] = time.time()
+            if _DOC_BATCH["message"] != "Stopped by user":
+                _DOC_BATCH["message"] = f"Done: {generated} insights from {processed} files, {failed} failed"
+    finally:
+        conn.close()
+
+
+@app.post("/api/documents/batch/start")
+def doc_batch_start(company_id: int):
+    """Start background AI analysis of a company's downloaded documents."""
+    with _DOC_BATCH_LOCK:
+        if _DOC_BATCH["running"]:
+            return {"ok": False, "message": "A document batch job is already running", "status": dict(_DOC_BATCH)}
+        _DOC_BATCH["running"] = True
+        _DOC_BATCH["company_id"] = company_id
+        _DOC_BATCH["started_at"] = time.time()
+        _DOC_BATCH["finished_at"] = None
+        _DOC_BATCH["stop_requested"] = False
+        _DOC_BATCH["message"] = "Starting..."
+
+    t = threading.Thread(target=_doc_batch_worker, args=(company_id,), daemon=True)
+    t.start()
+    return {"ok": True, "message": "Document analysis started", "status": dict(_DOC_BATCH)}
+
+
+@app.get("/api/documents/batch/status")
+def doc_batch_status():
+    with _DOC_BATCH_LOCK:
+        return dict(_DOC_BATCH)
+
+
+@app.post("/api/documents/batch/stop")
+def doc_batch_stop():
+    with _DOC_BATCH_LOCK:
+        if not _DOC_BATCH["running"]:
+            return {"ok": False, "message": "No document batch job is running"}
+        _DOC_BATCH["stop_requested"] = True
+    return {"ok": True, "message": "Stop requested"}
+
+
+# ---- Concall Analysis Job (background, on-demand per company) ----
+# Queues transcript announcements, downloads missing PDFs, and AI-summarizes
+# each transcript via the shared pipeline (OpenCode Zen by default).
+_CONCALL_BATCH = {
+    "running": False,
+    "company_id": None,
+    "scope": "all",
+    "total": 0,
+    "processed": 0,
+    "downloaded": 0,
+    "done": 0,
+    "failed": 0,
+    "current": "",
+    "started_at": None,
+    "finished_at": None,
+    "stop_requested": False,
+    "message": "",
+}
+_CONCALL_BATCH_LOCK = threading.Lock()
+
+
+def _concall_stop_requested():
+    with _CONCALL_BATCH_LOCK:
+        return _CONCALL_BATCH["stop_requested"]
+
+
+def _concall_batch_worker(company_id):
+    conn = get_db()
+    try:
+        cutoff = recent_cutoff(2)
+        if company_id:
+            companies = [company_id]
+        else:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT DISTINCT company_id FROM announcements WHERE announcement_date >= ? "
+                "AND attachment_url IS NOT NULL AND attachment_url != '' "
+                "AND (lower(headline) LIKE '%concall%' OR lower(headline) LIKE '%transcript%' "
+                "OR lower(headline) LIKE '%con. call%' OR lower(headline) LIKE '%earnings call%' "
+                "OR category IN ('Earnings Call Transcript','Analyst / Investor Meet',"
+                "'Analysts/Institutional Investor Meet/Con. Call Updates',"
+                "'Schedule of Analysts/Institutional Investor Meet/Con. Call')) ORDER BY company_id",
+                (cutoff,))
+            companies = [r["company_id"] for r in cursor.fetchall()]
+
+        with _CONCALL_BATCH_LOCK:
+            _CONCALL_BATCH["total"] = len(companies)
+            _CONCALL_BATCH["processed"] = 0
+            _CONCALL_BATCH["downloaded"] = 0
+            _CONCALL_BATCH["done"] = 0
+            _CONCALL_BATCH["failed"] = 0
+            _CONCALL_BATCH["message"] = f"Queuing transcripts for {len(companies)} companies..."
+
+        processed = done = failed = 0
+        for i, cid in enumerate(companies):
+            if _concall_stop_requested():
+                break
+            with _CONCALL_BATCH_LOCK:
+                _CONCALL_BATCH["current"] = str(cid)
+            try:
+                ensure_queued(conn, cid, cutoff)
+
+                def _cc_on_progress(_row_id, status, _msg):
+                    with _CONCALL_BATCH_LOCK:
+                        _CONCALL_BATCH["processed"] += 1
+                        if status == "done":
+                            _CONCALL_BATCH["done"] += 1
+
+                d, a, f = download_pending(conn, cid, cutoff, stop_cb=_concall_stop_requested)
+                with _CONCALL_BATCH_LOCK:
+                    _CONCALL_BATCH["downloaded"] += d
+                n = analyze_downloaded(
+                    conn, cid, stop_cb=_concall_stop_requested, on_progress=_cc_on_progress)
+                cursor = conn.cursor()
+                done_rows = cursor.execute(
+                    "SELECT COUNT(*) n FROM concalls WHERE company_id=? AND status='done'",
+                    (cid,)).fetchone()["n"]
+                done += done_rows
+                processed += n
+            except Exception as e:
+                failed += 1
+                with _CONCALL_BATCH_LOCK:
+                    _CONCALL_BATCH["message"] = f"Company {cid} error: {str(e)[:120]}"
+            with _CONCALL_BATCH_LOCK:
+                _CONCALL_BATCH["processed"] = i + 1
+                _CONCALL_BATCH["done"] = done
+                _CONCALL_BATCH["failed"] = failed
+                _CONCALL_BATCH["message"] = f"{i+1}/{len(companies)} companies; {done} transcripts summarized"
+
+        with _CONCALL_BATCH_LOCK:
+            _CONCALL_BATCH["running"] = False
+            _CONCALL_BATCH["finished_at"] = time.time()
+            if _CONCALL_BATCH["message"] != "Stopped by user":
+                _CONCALL_BATCH["message"] = f"Done: {done} transcripts summarized, {failed} company errors"
+    finally:
+        conn.close()
+
+
+@app.post("/api/concalls/batch/start")
+def concall_batch_start(company_id: Optional[int] = None):
+    """Start background concall transcript download + AI summarization."""
+    with _CONCALL_BATCH_LOCK:
+        if _CONCALL_BATCH["running"]:
+            return {"ok": False, "message": "A concall batch job is already running", "status": dict(_CONCALL_BATCH)}
+        _CONCALL_BATCH["running"] = True
+        _CONCALL_BATCH["company_id"] = company_id
+        _CONCALL_BATCH["scope"] = "company" if company_id else "all"
+        _CONCALL_BATCH["started_at"] = time.time()
+        _CONCALL_BATCH["finished_at"] = None
+        _CONCALL_BATCH["stop_requested"] = False
+        _CONCALL_BATCH["message"] = "Starting..."
+
+    t = threading.Thread(target=_concall_batch_worker, args=(company_id,), daemon=True)
+    t.start()
+    return {"ok": True, "message": "Concall analysis started", "status": dict(_CONCALL_BATCH)}
+
+
+@app.get("/api/concalls/batch/status")
+def concall_batch_status():
+    with _CONCALL_BATCH_LOCK:
+        return dict(_CONCALL_BATCH)
+
+
+@app.post("/api/concalls/batch/stop")
+def concall_batch_stop():
+    with _CONCALL_BATCH_LOCK:
+        if not _CONCALL_BATCH["running"]:
+            return {"ok": False, "message": "No concall batch job is running"}
+        _CONCALL_BATCH["stop_requested"] = True
+        _CONCALL_BATCH["message"] = "Stop requested"
+    return {"ok": True, "message": "Stop requested"}
+
+
+@app.get("/api/companies/{company_id}/concalls")
+def company_concalls(company_id: int):
+    """Stored concall summaries for a company (analyzed + queued)."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT id, announcement_id, call_date, quarter, title, transcript_path,
+                  summary, guidance, management_views, qna_summary,
+                  key_topics, key_numbers, sentiment, importance, status, error, analyzed_at
+           FROM concalls WHERE company_id = ? ORDER BY call_date DESC""",
+        (company_id,))
+    rows = [dict(r) for r in cursor.fetchall()]
+    for r in rows:
+        r["key_topics"] = _safe_json_list(r["key_topics"])
+        r["key_numbers"] = _safe_json_list(r["key_numbers"])
+    conn.close()
+    return {"company_id": company_id, "concalls": rows}
+
+
+def _safe_json_list(value):
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
 @app.get("/api/companies/{company_id}/ai-insights")
 def company_ai_insights(company_id: int, metric: Optional[str] = None, limit: int = 200):
     """Metric-wise, datewise AI insights timeline for a company."""
@@ -1305,6 +1811,228 @@ def company_ai_insights(company_id: int, metric: Optional[str] = None, limit: in
     insights = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return {"company_id": company_id, "metrics": metrics, "metric": metric, "insights": insights}
+
+
+@app.get("/api/companies/{company_id}/document-insights")
+def company_document_insights(company_id: int, metric: Optional[str] = None, limit: int = 200):
+    """Metric-wise AI insights extracted from downloaded document content."""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT DISTINCT metric FROM document_insights WHERE company_id = ? ORDER BY metric", (company_id,))
+    metrics = [r["metric"] for r in cursor.fetchall()]
+
+    if metric:
+        cursor.execute("""
+            SELECT id, file_id, announcement_id, metric, insight_date, headline, summary,
+                   amount, amount_text, sentiment, importance, raw_json
+            FROM document_insights WHERE company_id = ? AND metric = ?
+            ORDER BY insight_date DESC, id DESC LIMIT ?
+        """, (company_id, metric, limit))
+    else:
+        cursor.execute("""
+            SELECT id, file_id, announcement_id, metric, insight_date, headline, summary,
+                   amount, amount_text, sentiment, importance, raw_json
+            FROM document_insights WHERE company_id = ?
+            ORDER BY insight_date DESC, id DESC LIMIT ?
+        """, (company_id, limit))
+    insights = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return {"company_id": company_id, "metrics": metrics, "metric": metric, "insights": insights}
+
+
+@app.get("/api/companies/{company_id}/corporate-events")
+def company_corporate_events(company_id: int, limit: int = 100):
+    """Structured corporate events: corporate actions (mirrored into
+    announcements with event_key), board meetings, and result calendar."""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT 1 FROM companies WHERE id = ?", (company_id,))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    # Corporate actions: mirrored rows carry event_key = 'ca:*'
+    cursor.execute("""
+        SELECT id, exchange, category, subcategory, headline, announcement_date, ai_summary
+        FROM announcements
+        WHERE company_id = ? AND event_key IS NOT NULL
+        ORDER BY announcement_date DESC, id DESC LIMIT ?
+    """, (company_id, limit))
+    corporate_actions = []
+    for r in cursor.fetchall():
+        row = dict(r)
+        parsed = None
+        if row.get("ai_summary"):
+            try:
+                parsed = json.loads(row["ai_summary"])
+            except Exception:
+                parsed = None
+        corporate_actions.append({
+            "id": row["id"],
+            "exchange": row["exchange"],
+            "category": row["category"],
+            "subcategory": row["subcategory"],
+            "headline": row["headline"],
+            "date": row["announcement_date"],
+            "ai_summary": parsed,
+        })
+
+    cursor.execute("""
+        SELECT id, exchange, meeting_date, purpose, description
+        FROM board_meetings WHERE company_id = ?
+        ORDER BY meeting_date DESC LIMIT ?
+    """, (company_id, limit))
+    board_meetings = [dict(r) for r in cursor.fetchall()]
+
+    cursor.execute("""
+        SELECT id, exchange, result_date, event, period
+        FROM result_calendar WHERE company_id = ?
+        ORDER BY result_date DESC LIMIT ?
+    """, (company_id, limit))
+    result_calendar = [dict(r) for r in cursor.fetchall()]
+
+    cursor.execute("""
+        SELECT exchange, status, actions_found, actions_mirrored, board_meetings_found,
+               result_calendar_found, annual_reports_found, error
+        FROM enrich_status WHERE company_id = ? ORDER BY exchange
+    """, (company_id,))
+    enrichment = [dict(r) for r in cursor.fetchall()]
+
+    # Announcement-type breakdown for the company page (full-DB counts).
+    cursor.execute("""
+        SELECT
+          CASE
+            WHEN event_key IS NOT NULL AND event_key LIKE 'ca:%' THEN 'corporate_action'
+            WHEN LOWER(COALESCE(category,'')) LIKE '%result%'
+                 OR LOWER(COALESCE(category,'')) LIKE '%financial%' THEN 'financial_result'
+            WHEN LOWER(COALESCE(category,'')) LIKE '%board%' THEN 'board_meeting'
+            WHEN LOWER(COALESCE(category,'')) LIKE '%credit%' THEN 'credit_rating'
+            WHEN LOWER(COALESCE(category,'')) LIKE '%general%' THEN 'general'
+            ELSE 'other'
+          END AS family,
+          COUNT(*) AS cnt
+        FROM announcements
+        WHERE company_id = ?
+        GROUP BY family
+    """, (company_id,))
+    type_counts = {r["family"]: r["cnt"] for r in cursor.fetchall()}
+
+    conn.close()
+    return {
+        "company_id": company_id,
+        "corporate_actions": corporate_actions,
+        "board_meetings": board_meetings,
+        "result_calendar": result_calendar,
+        "enrichment": enrichment,
+        "type_counts": type_counts,
+    }
+
+
+@app.get("/api/companies/{company_id}/insights")
+def company_insights(company_id: int, source: str = "all", metric: Optional[str] = None, limit: int = 200):
+    """Unified metric-wise AI insights timeline combining announcement-level
+    (ai_insights) and document-level (document_insights) analysis."""
+    source = (source or "all").lower()
+    if source not in ("all", "announcement", "document"):
+        source = "all"
+
+    conn = get_db()
+    cursor = conn.cursor()
+    metrics = set()
+    rows = []
+
+    if source in ("all", "announcement"):
+        cursor.execute("SELECT DISTINCT metric FROM ai_insights WHERE company_id = ?", (company_id,))
+        metrics.update(r["metric"] for r in cursor.fetchall())
+        q = """
+            SELECT id, announcement_id, metric, announcement_date, headline, summary,
+                   amount, amount_text, sentiment, importance
+            FROM ai_insights WHERE company_id = ?
+        """
+        args = [company_id]
+        if metric:
+            q += " AND metric = ?"
+            args.append(metric)
+        q += " ORDER BY announcement_date DESC, id DESC LIMIT ?"
+        args.append(limit)
+        cursor.execute(q, args)
+        for r in cursor.fetchall():
+            rows.append({
+                "id": r["id"], "source": "announcement", "metric": r["metric"],
+                "date": r["announcement_date"], "headline": r["headline"],
+                "summary": r["summary"], "amount": r["amount"],
+                "amount_text": r["amount_text"], "sentiment": r["sentiment"],
+                "importance": r["importance"],
+            })
+
+    if source in ("all", "document"):
+        cursor.execute("SELECT DISTINCT metric FROM document_insights WHERE company_id = ?", (company_id,))
+        metrics.update(r["metric"] for r in cursor.fetchall())
+        q = """
+            SELECT id, file_id, announcement_id, metric, insight_date, headline, summary,
+                   amount, amount_text, sentiment, importance
+            FROM document_insights WHERE company_id = ?
+        """
+        args = [company_id]
+        if metric:
+            q += " AND metric = ?"
+            args.append(metric)
+        q += " ORDER BY insight_date DESC, id DESC LIMIT ?"
+        args.append(limit)
+        cursor.execute(q, args)
+        for r in cursor.fetchall():
+            rows.append({
+                "id": r["id"], "source": "document", "metric": r["metric"],
+                "date": r["insight_date"], "headline": r["headline"],
+                "summary": r["summary"], "amount": r["amount"],
+                "amount_text": r["amount_text"], "sentiment": r["sentiment"],
+                "importance": r["importance"],
+            })
+
+    conn.close()
+    seen = set()
+    deduped = []
+    for r in rows:
+        key = (r["date"], r["metric"], (r["headline"] or "").strip().lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(r)
+    deduped.sort(key=lambda x: (x["date"] or ""), reverse=True)
+    return {
+        "company_id": company_id,
+        "source": source,
+        "metrics": sorted(metrics),
+        "metric": metric,
+        "insights": deduped[:limit],
+    }
+
+
+@app.get("/api/companies/{company_id}/documents/status")
+def company_documents_status(company_id: int):
+    """Status of per-company document files (downloaded + analyzed)."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT status, kind, COUNT(*) as cnt
+        FROM company_files WHERE company_id = ?
+        GROUP BY status, kind ORDER BY status, kind
+    """, (company_id,))
+    rows = [dict(r) for r in cursor.fetchall()]
+    cursor.execute("""
+        SELECT COUNT(*) as total, SUM(CASE WHEN analyzed=1 THEN 1 ELSE 0 END) as analyzed
+        FROM company_files WHERE company_id = ? AND status='done'
+    """, (company_id,))
+    summary = cursor.fetchone()
+    conn.close()
+    return {
+        "company_id": company_id,
+        "status_counts": rows,
+        "downloaded": summary["total"] or 0,
+        "analyzed": summary["analyzed"] or 0,
+    }
 
 
 if __name__ == "__main__":

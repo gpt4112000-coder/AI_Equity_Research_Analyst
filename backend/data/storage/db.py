@@ -193,6 +193,140 @@ CREATE TABLE IF NOT EXISTS fetched_stock (
 
 CREATE INDEX IF NOT EXISTS idx_fetched_symbol ON fetched_stock(symbol);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fetched_symbol_exchange ON fetched_stock(symbol, exchange);
+
+CREATE TABLE IF NOT EXISTS company_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    announcement_id INTEGER,
+    kind TEXT,
+    local_path TEXT,
+    source_url TEXT,
+    source_exchange TEXT,
+    file_size INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending',
+    analyzed INTEGER DEFAULT 0,
+    downloaded_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (company_id) REFERENCES companies(id),
+    FOREIGN KEY (announcement_id) REFERENCES announcements(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_company_files_company ON company_files(company_id);
+CREATE INDEX IF NOT EXISTS idx_company_files_ann ON company_files(announcement_id);
+CREATE INDEX IF NOT EXISTS idx_company_files_status ON company_files(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_company_files_url ON company_files(company_id, source_url);
+
+CREATE TABLE IF NOT EXISTS backfill_status (
+    company_id INTEGER NOT NULL,
+    exchange TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    from_date DATE,
+    to_date DATE,
+    announcements_fetched INTEGER DEFAULT 0,
+    announcements_inserted INTEGER DEFAULT 0,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    error TEXT,
+    FOREIGN KEY (company_id) REFERENCES companies(id),
+    PRIMARY KEY (company_id, exchange)
+);
+
+CREATE TABLE IF NOT EXISTS document_insights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    file_id INTEGER,
+    announcement_id INTEGER,
+    metric TEXT NOT NULL,
+    insight_date DATE,
+    headline TEXT,
+    summary TEXT,
+    amount REAL,
+    amount_text TEXT,
+    sentiment TEXT,
+    importance TEXT,
+    raw_json TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (company_id) REFERENCES companies(id),
+    FOREIGN KEY (file_id) REFERENCES company_files(id),
+    FOREIGN KEY (announcement_id) REFERENCES announcements(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_doc_ins_company ON document_insights(company_id);
+CREATE INDEX IF NOT EXISTS idx_doc_ins_metric ON document_insights(company_id, metric, insight_date);
+CREATE INDEX IF NOT EXISTS idx_doc_ins_file ON document_insights(file_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_ins_unique ON document_insights(file_id, metric);
+
+-- Corporate event enrichment (A2): board meetings + result calendar + enrich tracking
+CREATE TABLE IF NOT EXISTS board_meetings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    exchange TEXT NOT NULL,
+    meeting_date DATE NOT NULL,
+    purpose TEXT,
+    description TEXT,
+    raw_data TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (company_id) REFERENCES companies(id),
+    UNIQUE (company_id, meeting_date, purpose)
+);
+
+CREATE TABLE IF NOT EXISTS result_calendar (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    exchange TEXT NOT NULL,
+    result_date DATE NOT NULL,
+    event TEXT,
+    period TEXT,
+    raw_data TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (company_id) REFERENCES companies(id),
+    UNIQUE (company_id, result_date, event)
+);
+
+CREATE TABLE IF NOT EXISTS enrich_status (
+    company_id INTEGER NOT NULL,
+    exchange TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    actions_found INTEGER DEFAULT 0,
+    actions_mirrored INTEGER DEFAULT 0,
+    board_meetings_found INTEGER DEFAULT 0,
+    result_calendar_found INTEGER DEFAULT 0,
+    annual_reports_found INTEGER DEFAULT 0,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    error TEXT,
+    FOREIGN KEY (company_id) REFERENCES companies(id),
+    PRIMARY KEY (company_id, exchange)
+);
+
+-- Concall transcripts: per-company downloaded transcripts + AI summaries
+CREATE TABLE IF NOT EXISTS concalls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    announcement_id INTEGER,
+    call_date TEXT,
+    quarter TEXT,
+    title TEXT,
+    transcript_path TEXT,
+    summary TEXT,
+    guidance TEXT,
+    management_views TEXT,
+    qna_summary TEXT,
+    key_topics TEXT,
+    key_numbers TEXT,
+    sentiment TEXT,
+    importance TEXT,
+    status TEXT DEFAULT 'pending',
+    error TEXT,
+    analyzed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (company_id) REFERENCES companies(id),
+    FOREIGN KEY (announcement_id) REFERENCES announcements(id),
+    UNIQUE (company_id, announcement_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_concalls_company ON concalls(company_id, call_date);
+CREATE INDEX IF NOT EXISTS idx_concalls_status ON concalls(status);
 """
 
 
@@ -225,6 +359,52 @@ def init_db():
     # 4) Partial index for fast pending-AI lookups (needs ai_summary column, hence after migrations)
     if "idx_ann_pending_ai" not in existing:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_ann_pending_ai ON announcements(company_id) WHERE ai_summary IS NULL OR ai_summary = ''")
+    # 5) Add analyzed column to company_files if missing
+    fcols = [r[1] for r in cursor.execute("PRAGMA table_info(company_files)").fetchall()]
+    if "analyzed" not in fcols:
+        cursor.execute("ALTER TABLE company_files ADD COLUMN analyzed INTEGER DEFAULT 0")
+        print("  Migration: added analyzed column to company_files")
+    # 5b) Add subcategory + event_key columns to announcements (corporate-event mirrors)
+    acols = [r[1] for r in cursor.execute("PRAGMA table_info(announcements)").fetchall()]
+    if "subcategory" not in acols:
+        cursor.execute("ALTER TABLE announcements ADD COLUMN subcategory TEXT")
+        print("  Migration: added subcategory column to announcements")
+    if "event_key" not in acols:
+        cursor.execute("ALTER TABLE announcements ADD COLUMN event_key TEXT")
+        print("  Migration: added event_key column to announcements")
+    # 6) Rebuild backfill_status with composite PK (company_id, exchange) so
+    #    BSE and NSE rows don't overwrite each other
+    bcols = [r[1] for r in cursor.execute("PRAGMA table_info(backfill_status)").fetchall()]
+    if bcols and "exchange" in bcols:
+        pks = [r[5] for r in cursor.execute("PRAGMA table_info(backfill_status)").fetchall()]
+        if pks and pks[0] == 1 and "exchange" in bcols:
+            cursor.execute("ALTER TABLE backfill_status RENAME TO backfill_status_old")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS backfill_status (
+                    company_id INTEGER NOT NULL,
+                    exchange TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    from_date DATE,
+                    to_date DATE,
+                    announcements_fetched INTEGER DEFAULT 0,
+                    announcements_inserted INTEGER DEFAULT 0,
+                    started_at TIMESTAMP,
+                    finished_at TIMESTAMP,
+                    error TEXT,
+                    FOREIGN KEY (company_id) REFERENCES companies(id),
+                    PRIMARY KEY (company_id, exchange)
+                )
+            """)
+            cursor.execute("""
+                INSERT OR IGNORE INTO backfill_status
+                (company_id, exchange, status, from_date, to_date,
+                 announcements_fetched, announcements_inserted, started_at, finished_at, error)
+                SELECT company_id, exchange, status, from_date, to_date,
+                       announcements_fetched, announcements_inserted, started_at, finished_at, error
+                FROM backfill_status_old
+            """)
+            cursor.execute("DROP TABLE backfill_status_old")
+            print("  Migration: rebuilt backfill_status with composite PK (company_id, exchange)")
     conn.commit()
     conn.close()
     print("Database initialized successfully.")

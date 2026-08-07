@@ -75,16 +75,59 @@
 
 <script>
 var API = '/api';
-var state = { page: 'dashboard', sector: null, companyId: null, search: '', offset: 0, insight_type: null, sort_by: 'market_cap', sort_order: 'desc', from_date: null, to_date: null, sentiment: null, min_amount: null, max_amount: null };
+var state = { page: 'dashboard', sector: null, companyId: null, search: '', offset: 0, insight_type: null, sort_by: 'market_cap', sort_order: 'desc', from_date: null, to_date: null, sentiment: null, min_amount: null, max_amount: null, corporate_actions: null };
+
+function restoreState() {
+    var params = new URLSearchParams(window.location.search);
+    var company = params.get('company');
+    var page = params.get('page');
+    state.page = page || (company ? 'company' : 'dashboard');
+    if (company) state.companyId = parseInt(company) || null;
+    if (params.get('sector')) state.sector = params.get('sector');
+    if (params.get('search')) state.search = params.get('search');
+    if (params.get('offset')) state.offset = parseInt(params.get('offset')) || 0;
+    if (params.get('insight_type')) state.insight_type = params.get('insight_type');
+    if (params.get('sort_by')) state.sort_by = params.get('sort_by');
+    if (params.get('sort_order')) state.sort_order = params.get('sort_order');
+    if (params.get('from_date')) state.from_date = params.get('from_date');
+    if (params.get('to_date')) state.to_date = params.get('to_date');
+    if (params.get('sentiment')) state.sentiment = params.get('sentiment');
+    var mn = params.get('min_amount'); if (mn !== null && mn !== '') state.min_amount = parseFloat(mn);
+    var mx = params.get('max_amount'); if (mx !== null && mx !== '') state.max_amount = parseFloat(mx);
+    if (params.get('corporate_actions')) state.corporate_actions = parseInt(params.get('corporate_actions')) || null;
+}
+
+function syncUrl() {
+    var params = new URLSearchParams();
+    if (state.page && state.page !== 'dashboard') params.set('page', state.page);
+    if (state.companyId) params.set('company', state.companyId);
+    if (state.sector) params.set('sector', state.sector);
+    if (state.search) params.set('search', state.search);
+    if (state.offset) params.set('offset', state.offset);
+    if (state.insight_type) params.set('insight_type', state.insight_type);
+    if (state.sort_by && state.sort_by !== 'market_cap') params.set('sort_by', state.sort_by);
+    if (state.sort_order && state.sort_order !== 'desc') params.set('sort_order', state.sort_order);
+    if (state.from_date) params.set('from_date', state.from_date);
+    if (state.to_date) params.set('to_date', state.to_date);
+    if (state.sentiment) params.set('sentiment', state.sentiment);
+    if (state.min_amount !== null && state.min_amount !== undefined && state.min_amount !== '') params.set('min_amount', state.min_amount);
+    if (state.max_amount !== null && state.max_amount !== undefined && state.max_amount !== '') params.set('max_amount', state.max_amount);
+    if (state.corporate_actions) params.set('corporate_actions', state.corporate_actions);
+    var qs = params.toString();
+    var url = qs ? '/?' + qs : '/';
+    var cur = window.location.pathname + window.location.search;
+    if (cur === url) return;
+    history.pushState(state, '', url);
+}
 
 (function() {
-    var params = new URLSearchParams(window.location.search);
-    var companyId = params.get('company');
-    if (companyId) {
-        state.page = 'company';
-        state.companyId = parseInt(companyId);
-    }
+    restoreState();
 })();
+window.addEventListener('popstate', function() {
+    restoreState();
+    renderNav();
+    render();
+});
 
 function api(path, opts) {
     var fetchOpts = {method: (opts && opts.method) || 'GET'};
@@ -126,6 +169,7 @@ function render() {
     if (state.page === 'dashboard') renderDashboard(app);
     else if (state.page === 'companies') renderCompanies(app);
     else if (state.page === 'company') renderCompany(app);
+    syncUrl();
 }
 
 function renderDashboard(el) {
@@ -223,7 +267,7 @@ function renderCompanies(el) {
         html += '<div class="filter-group">';
         html += '<label class="filter-label">Sort By</label>';
         html += '<select class="sort-select" onchange="state.sort_by=this.value;state.offset=0;renderCompanies(document.getElementById(\'app\'))">';
-        var sortOpts = [{v:'market_cap',l:'Market Cap'},{v:'announcements',l:'Announcements'},{v:'company',l:'Company Name'},{v:'latest',l:'Latest Date'},{v:'sentiment',l:'Sentiment'},{v:'guidance_count',l:'Guidance Count'},{v:'order_count',l:'Order Count'},{v:'capex_count',l:'Capex Count'}];
+        var sortOpts = [{v:'market_cap',l:'Market Cap'},{v:'announcements',l:'Announcements'},{v:'company',l:'Company Name'},{v:'latest',l:'Latest Date'},{v:'ca_latest',l:'Latest Corp. Action'},{v:'sentiment',l:'Sentiment'},{v:'guidance_count',l:'Guidance Count'},{v:'order_count',l:'Order Count'},{v:'capex_count',l:'Capex Count'}];
         for (var i=0;i<sortOpts.length;i++) {
             html += '<option value="'+sortOpts[i].v+'"'+(state.sort_by===sortOpts[i].v?' selected':'')+'>'+sortOpts[i].l+'</option>';
         }
@@ -254,8 +298,15 @@ function renderCompanies(el) {
         html += '<input type="number" class="amount-input" placeholder="Max" value="'+(state.max_amount||'')+'" onchange="state.max_amount=this.value||null;state.offset=0;renderCompanies(document.getElementById(\'app\'))">';
         html += '</div>';
 
+        html += '<div class="filter-group">';
+        html += '<label class="filter-label">Corporate Actions</label>';
+        html += '<div class="filters">';
+        html += '<span class="chip'+(!state.corporate_actions?' active':'')+'" onclick="state.corporate_actions=null;state.offset=0;renderCompanies(document.getElementById(\'app\'))">All</span>';
+        html += '<span class="chip'+(state.corporate_actions?' active':'')+'" onclick="state.corporate_actions=1;state.offset=0;renderCompanies(document.getElementById(\'app\'))">Has Actions</span>';
+        html += '</div></div>';
+
         html += '<div class="filter-group" style="align-self:end">';
-        html += '<button class="btn btn-secondary" onclick="state.insight_type=null;state.sort_by=\'market_cap\';state.sort_order=\'desc\';state.from_date=null;state.to_date=null;state.sentiment=null;state.min_amount=null;state.max_amount=null;state.offset=0;renderCompanies(document.getElementById(\'app\'))">Clear Filters</button>';
+        html += '<button class="btn btn-secondary" onclick="state.insight_type=null;state.sort_by=\'market_cap\';state.sort_order=\'desc\';state.from_date=null;state.to_date=null;state.sentiment=null;state.min_amount=null;state.max_amount=null;state.corporate_actions=null;state.offset=0;renderCompanies(document.getElementById(\'app\'))">Clear Filters</button>';
         html += '</div>';
         html += '</div>';
 
@@ -272,7 +323,9 @@ function renderCompanies(el) {
             else if (c.bse_code) exch = 'BSE';
 
             html += '<tr onclick="navigate(\'company\',{companyId:' + c.id + '})">';
-            html += '<td><a href="/?company=' + c.id + '" onclick="event.stopPropagation();if(event.ctrlKey||event.metaKey||event.shiftKey||event.button!==0){return true;}navigate(\'company\',{companyId:' + c.id + '});return false;" style="text-decoration:none;color:inherit;cursor:pointer"><div style="font-weight:600">' + (c.company_name || '') + '</div><div class="muted" style="font-size:.7rem">' + sym + ' <span style="font-size:.65rem;color:#60a5fa" title="Open in new tab">↗</span></div></a></td>';
+            html += '<td><a href="/?company=' + c.id + '" onclick="event.stopPropagation();if(event.ctrlKey||event.metaKey||event.shiftKey||event.button!==0){return true;}navigate(\'company\',{companyId:' + c.id + '});return false;" style="text-decoration:none;color:inherit;cursor:pointer"><div style="font-weight:600">' + (c.company_name || '') + '</div><div class="muted" style="font-size:.7rem">' + sym + ' <span style="font-size:.65rem;color:#60a5fa" title="Open in new tab">↗</span>';
+            if (c.ca_count) html += ' <span style="font-size:.6rem;background:#a78bfa22;color:#a78bfa;border:1px solid #a78bfa55;border-radius:9999px;padding:.05rem .4rem" title="Corporate actions">' + c.ca_count + ' CA</span>';
+            html += '</div></a></td>';
             html += '<td>₹' + (c.market_cap_cr ? c.market_cap_cr.toFixed(0) : '-') + ' Cr</td>';
             html += '<td><span class="sector-badge">' + (c.sector || 'other').replace(/_/g, ' ') + '</span></td>';
             html += '<td>' + exch + '</td>';
@@ -299,6 +352,7 @@ function renderCompanies(el) {
         }
 
         el.innerHTML = html;
+        syncUrl();
     }).catch(function(e) {
         el.innerHTML = '<div class="card">Error: ' + e.message + '</div>';
     });
@@ -417,33 +471,38 @@ function renderCompany(el) {
         html += '</div>';
 
         html += '<div class="card" id="ai-summary-card">';
-        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem">';
-        html += '<h3 style="font-size:.9rem">AI Research Summary</h3>';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;flex-wrap:wrap;gap:.5rem">';
         html += '<div>';
+        html += '<h3 style="font-size:.9rem">AI Research Summary</h3>';
+        html += '<div id="doc-status-line" style="font-size:.68rem;color:#94a3b8">Loading status...</div>';
+        html += '</div>';
+        html += '<div style="display:flex;gap:.4rem;flex-wrap:wrap">';
         html += '<button class="btn btn-primary" id="gen-summary-btn" onclick="generateSummary(' + c.id + ')">Generate Summary</button>';
-        html += ' <button class="btn btn-secondary" id="gen-all-btn" onclick="generateAllAnn(' + c.id + ')" style="margin-left:.25rem">Analyze All Announcements</button>';
+        html += '<button class="btn btn-secondary" id="ai-batch-company-btn" onclick="startAiBatch(' + c.id + ')">Analyze Announcements</button>';
+        html += '<button class="btn btn-secondary" id="ai-batch-all-btn" onclick="startAiBatch()">Analyze All Companies</button>';
+        html += '<button class="btn btn-secondary" id="doc-batch-btn" onclick="startDocBatch(' + c.id + ')">Analyze Documents</button>';
+        html += '<button class="btn btn-secondary" id="ai-batch-stop-btn" onclick="stopAiBatch()" style="display:none">Stop</button>';
+        html += '<button class="btn btn-secondary" id="doc-batch-stop-btn" onclick="stopDocBatch()" style="display:none">Stop</button>';
         html += '</div></div>';
+        html += '<div id="ai-batch-progress" style="font-size:.75rem;color:#94a3b8">No analysis running.</div>';
+        html += '<div id="doc-batch-progress" style="font-size:.75rem;color:#94a3b8"></div>';
         if (d.company_ai_summary && d.company_ai_summary.summary) {
             html += '<div id="ai-summary-content">' + renderAiSummary(d.company_ai_summary.summary, d.company_ai_summary.announcements_used, d.company_ai_summary.generated_at) + '</div>';
         } else {
-            html += '<div id="ai-summary-content" style="font-size:.8rem;color:#cbd5e1;line-height:1.6">Click "Generate Summary" to get an AI analysis synthesizing all announcement summaries with dates.</div>';
+            html += '<div id="ai-summary-content" style="font-size:.8rem;color:#cbd5e1;line-height:1.6">Run "Analyze Announcements" to generate per-filing AI summaries, then "Generate Summary" for the synthesized research report. Insights appear here automatically.</div>';
         }
         html += '</div>';
 
-        html += '<div class="card" id="ai-batch-card">';
-        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;flex-wrap:wrap;gap:.5rem">';
-        html += '<h3 style="font-size:.9rem">AI Batch Analysis</h3>';
-        html += '<div style="display:flex;gap:.4rem">';
-        html += '<button class="btn btn-primary" id="ai-batch-company-btn" onclick="startAiBatch(' + c.id + ')">Analyze This Company</button>';
-        html += '<button class="btn btn-secondary" id="ai-batch-all-btn" onclick="startAiBatch()">Analyze All Companies</button>';
-        html += '<button class="btn btn-secondary" id="ai-batch-stop-btn" onclick="stopAiBatch()" style="display:none">Stop</button>';
-        html += '</div></div>';
-        html += '<div id="ai-batch-progress" style="font-size:.75rem;color:#94a3b8">No batch job running.</div>';
-        html += '</div>';
-
         html += '<div class="card" id="ai-insights-card">';
-        html += '<h3 style="margin-bottom:.5rem;font-size:.9rem">AI Insights Timeline</h3>';
-        html += '<div id="ai-insights-content" style="font-size:.8rem;color:#94a3b8">Loading AI insights...</div>';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;flex-wrap:wrap;gap:.5rem">';
+        html += '<h3 style="font-size:.9rem">AI Insights Timeline</h3>';
+        html += '</div>';
+        html += '<div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.5rem">';
+        html += '<button class="btn ' + (insightsState.source === 'all' ? 'btn-primary' : 'btn-secondary') + '" id="ins-source-all" onclick="setInsightSource(\'all\')">All</button>';
+        html += '<button class="btn ' + (insightsState.source === 'announcement' ? 'btn-primary' : 'btn-secondary') + '" id="ins-source-announcement" onclick="setInsightSource(\'announcement\')">Announcements</button>';
+        html += '<button class="btn ' + (insightsState.source === 'document' ? 'btn-primary' : 'btn-secondary') + '" id="ins-source-document" onclick="setInsightSource(\'document\')">Documents</button>';
+        html += '</div>';
+        html += '<div id="ai-insights-content" style="font-size:.8rem;color:#94a3b8">Loading insights...</div>';
         html += '</div>';
 
         html += '<div class="card" id="peer-compare-card">';
@@ -457,20 +516,30 @@ function renderCompany(el) {
         html += '<div id="peer-compare-content" style="font-size:.8rem;color:#94a3b8">Loading comparison...</div>';
         html += '</div>';
 
+        html += '<div class="card" id="corporate-events-card">';
+        html += '<h3 style="margin-bottom:.5rem;font-size:.9rem">Corporate Events</h3>';
+        html += '<div id="corporate-events-content" style="font-size:.8rem;color:#94a3b8">Loading corporate events...</div>';
+        html += '</div>';
+
         html += '<div class="card"><h3 style="margin-bottom:.5rem;font-size:.9rem">Documents</h3>';
         html += '<div id="docs-container" style="font-size:.8rem;color:#94a3b8">Loading documents...</div>';
         html += '</div>';
 
         el.innerHTML = html;
+        syncUrl();
 
         if (symbol) {
             loadStockInfo(symbol);
         }
         loadSentimentTimeline(state.companyId);
         loadPeerCompare(state.companyId, symbol);
+        loadCorporateEvents(state.companyId);
         loadDocuments(state.companyId);
-        loadAiInsights(state.companyId);
+        loadInsights(state.companyId);
+        loadDocumentStatus(state.companyId);
+        pollDocBatchStatus();
         pollAiBatchStatus();
+        maybeAutoAnalyze(state.companyId);
     }).catch(function(e) {
         el.innerHTML = '<div class="card">Error: ' + e.message + '</div>';
     });
@@ -647,25 +716,6 @@ function generateAnnSummary(annId, companyId) {
     });
 }
 
-function generateAllAnn(companyId) {
-    var btn = document.getElementById('gen-all-btn');
-    btn.disabled = true;
-    btn.textContent = 'Analyzing...';
-
-    api('/companies/' + companyId + '/generate_summaries', {method: 'POST'}).then(function(d) {
-        if (d.generated === 0 && d.already_done > 0) {
-            btn.textContent = 'All ' + d.already_done + ' already analyzed';
-        } else {
-            btn.textContent = 'Done (' + d.generated + ' new, ' + d.already_done + ' existing)';
-        }
-        btn.disabled = false;
-        renderCompany(document.getElementById('app'));
-    }).catch(function(e) {
-        btn.textContent = 'Error: ' + e.message;
-        btn.disabled = false;
-    });
-}
-
 function renderAiSummary(text, used, generatedAt) {
     if (!text) return '';
     var html = '';
@@ -725,9 +775,9 @@ function generateSummary(companyId) {
 }
 
 // ---------------------------------------------------------------------------
-// AI Batch Analysis + AI Insights Timeline
+// AI Analysis: batch job + unified Insights Timeline (announcement + document)
 // ---------------------------------------------------------------------------
-var aiInsightsState = { metric: null };
+var insightsState = { source: 'all', metric: null };
 
 function startAiBatch(companyId) {
     var url = '/ai/batch/start';
@@ -748,6 +798,9 @@ function stopAiBatch() {
     }).catch(function() {});
 }
 
+var _lastBatchProcessed = -1;
+var _lastInsightReload = 0;
+
 function pollAiBatchStatus() {
     api('/ai/batch/status').then(function(d) {
         var prog = document.getElementById('ai-batch-progress');
@@ -764,6 +817,14 @@ function pollAiBatchStatus() {
             prog.innerHTML = '<div style="margin-bottom:.4rem"><span class="spinner" style="width:12px;height:12px;border:2px solid #60a5fa;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;display:inline-block;vertical-align:middle"></span> ' +
                 '<span style="vertical-align:middle">Processing: ' + d.processed + ' / ' + d.total + ' (' + pct + '%) &mdash; ' + d.message + '</span></div>' +
                 '<div style="height:6px;background:#1e293b;border-radius:9999px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg,#60a5fa,#a78bfa);transition:width .5s"></div></div>';
+            if (d.processed !== _lastBatchProcessed) {
+                _lastBatchProcessed = d.processed;
+                var now = Date.now();
+                if (now - _lastInsightReload >= 3000) {
+                    _lastInsightReload = now;
+                    loadInsights(state.companyId);
+                }
+            }
             setTimeout(pollAiBatchStatus, 2000);
         } else {
             if (companyBtn) companyBtn.disabled = false;
@@ -771,40 +832,61 @@ function pollAiBatchStatus() {
             if (stopBtn) stopBtn.style.display = 'none';
             prog.innerHTML = '<div style="color:#94a3b8">' + (d.message || 'No batch job running.') + '</div>';
             if (d.finished_at) {
-                loadAiInsights(state.companyId);
+                _lastBatchProcessed = -1;
+                loadInsights(state.companyId);
             }
         }
     }).catch(function() {});
 }
 
-function loadAiInsights(companyId) {
+function maybeAutoAnalyze(companyId) {
+    api('/companies/' + companyId).then(function(d) {
+        var st = d.analysis_status;
+        if (!st) return;
+        if ((st.ai_pending || 0) > 0 && !(st.ai_insight_count > 0)) {
+            api('/ai/batch/start?company_id=' + companyId, {method: 'POST'}).then(function() {
+                pollAiBatchStatus();
+            }).catch(function() {});
+        }
+    }).catch(function() {});
+}
+
+function setInsightSourceButtons() {
+    ['all', 'announcement', 'document'].forEach(function(s) {
+        var el = document.getElementById('ins-source-' + s);
+        if (el) el.className = 'btn ' + (insightsState.source === s ? 'btn-primary' : 'btn-secondary');
+    });
+}
+
+function loadInsights(companyId) {
     var content = document.getElementById('ai-insights-content');
     if (!content) return;
-    content.innerHTML = '<div style="color:#94a3b8">Loading AI insights...</div>';
+    content.innerHTML = '<div style="color:#94a3b8">Loading insights...</div>';
 
-    var url = '/companies/' + companyId + '/ai-insights';
-    if (aiInsightsState.metric) url += '?metric=' + encodeURIComponent(aiInsightsState.metric);
+    var url = '/companies/' + companyId + '/insights?source=' + insightsState.source;
+    if (insightsState.metric) url += '&metric=' + encodeURIComponent(insightsState.metric);
     api(url).then(function(d) {
-        renderAiInsights(d);
+        renderInsights(d);
     }).catch(function(e) {
         content.innerHTML = '<div style="color:#f87171">Error: ' + e.message + '</div>';
     });
 }
 
-function renderAiInsights(d) {
+function renderInsights(d) {
     var content = document.getElementById('ai-insights-content');
     if (!content) return;
+    setInsightSourceButtons();
 
     var html = '<div style="display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.6rem">';
-    html += '<button class="btn ' + (!aiInsightsState.metric ? 'btn-primary' : 'btn-secondary') + '" onclick="setAiInsightMetric(null)" style="font-size:.68rem;padding:.2rem .6rem">All</button>';
+    html += '<button class="btn ' + (!insightsState.metric ? 'btn-primary' : 'btn-secondary') + '" onclick="setInsightMetric(null)" style="font-size:.68rem;padding:.2rem .6rem">All</button>';
     for (var i = 0; i < d.metrics.length; i++) {
         var m = d.metrics[i];
-        html += '<button class="btn ' + (aiInsightsState.metric === m ? 'btn-primary' : 'btn-secondary') + '" onclick="setAiInsightMetric(\'' + m.replace(/'/g, "\\'") + '\')" style="font-size:.68rem;padding:.2rem .6rem">' + m.replace(/_/g, ' ') + '</button>';
+        html += '<button class="btn ' + (insightsState.metric === m ? 'btn-primary' : 'btn-secondary') + '" onclick="setInsightMetric(\'' + m.replace(/'/g, "\\'") + '\')" style="font-size:.68rem;padding:.2rem .6rem">' + m.replace(/_/g, ' ') + '</button>';
     }
     html += '</div>';
 
     if (!d.insights.length) {
-        html += '<div class="muted">No AI insights yet. Run "Analyze This Company" or "Analyze All Companies" above.</div>';
+        html += '<div class="muted">No insights yet. Run "Analyze Announcements" or "Analyze Documents" above; insights appear here as they are generated.</div>';
         content.innerHTML = html;
         return;
     }
@@ -813,9 +895,10 @@ function renderAiInsights(d) {
     var lastDate = '';
     for (var j = 0; j < d.insights.length; j++) {
         var it = d.insights[j];
-        if (it.announcement_date !== lastDate) {
-            lastDate = it.announcement_date;
-            html += '<div style="margin:.5rem 0 .25rem;font-size:.72rem;font-weight:600;color:#60a5fa">' + (lastDate || 'Unknown') + '</div>';
+        var dateColor = it.source === 'document' ? '#34d399' : '#60a5fa';
+        if (it.date !== lastDate) {
+            lastDate = it.date;
+            html += '<div style="margin:.5rem 0 .25rem;font-size:.72rem;font-weight:600;color:' + dateColor + '">' + (lastDate || 'Unknown') + '</div>';
         }
         var imp = it.importance || 'medium';
         var impColor = imp === 'high' ? '#fbbf24' : imp === 'low' ? '#64748b' : '#94a3b8';
@@ -824,7 +907,10 @@ function renderAiInsights(d) {
         html += '<div style="background:#0f172a;border-radius:6px;padding:.5rem .6rem;margin-bottom:.35rem">';
         html += '<div style="display:flex;justify-content:space-between;align-items:start;gap:.5rem">';
         html += '<div style="font-weight:500;font-size:.75rem">' + (it.headline || '') + '</div>';
-        html += '<span class="sector-badge" style="font-size:.6rem;white-space:nowrap">' + it.metric.replace(/_/g, ' ') + '</span>';
+        html += '<div style="display:flex;gap:.3rem;white-space:nowrap">';
+        html += '<span class="sector-badge" style="font-size:.6rem">' + it.metric.replace(/_/g, ' ') + '</span>';
+        html += '<span class="sector-badge" style="font-size:.6rem;background:#1e293b;color:' + dateColor + '">' + (it.source === 'document' ? 'DOC' : 'ANN') + '</span>';
+        html += '</div>';
         html += '</div>';
         if (it.summary) html += '<div style="font-size:.7rem;color:#c4b5fd;margin-top:.25rem;line-height:1.5">' + it.summary + '</div>';
         html += '<div style="display:flex;gap:.4rem;margin-top:.25rem;flex-wrap:wrap">';
@@ -838,9 +924,124 @@ function renderAiInsights(d) {
     content.innerHTML = html;
 }
 
-function setAiInsightMetric(metric) {
-    aiInsightsState.metric = metric;
-    loadAiInsights(state.companyId);
+function setInsightMetric(metric) {
+    insightsState.metric = metric;
+    loadInsights(state.companyId);
+}
+
+function setInsightSource(src) {
+    insightsState.source = src;
+    insightsState.metric = null;
+    loadInsights(state.companyId);
+}
+
+function loadDocumentStatus(companyId) {
+    api('/companies/' + companyId + '/documents/status').then(function(d) {
+        var line = document.getElementById('doc-status-line');
+        if (line) {
+            line.innerHTML = 'Downloaded ' + (d.downloaded || 0) + ' / Analyzed ' + (d.analyzed || 0);
+        }
+    }).catch(function() {});
+}
+
+function startDocBatch(companyId) {
+    api('/documents/batch/start?company_id=' + companyId, {method: 'POST'}).then(function(d) {
+        var prog = document.getElementById('doc-batch-progress');
+        if (prog) prog.innerHTML = '<div style="color:#60a5fa">' + (d.message || 'Started') + '</div>';
+        pollDocBatchStatus();
+    }).catch(function(e) {
+        var prog = document.getElementById('doc-batch-progress');
+        if (prog) prog.innerHTML = '<div style="color:#f87171">Error: ' + e.message + '</div>';
+    });
+}
+
+function stopDocBatch() {
+    api('/documents/batch/stop', {method: 'POST'}).then(function() {
+        pollDocBatchStatus();
+    }).catch(function() {});
+}
+
+function pollDocBatchStatus() {
+    api('/documents/batch/status').then(function(d) {
+        var prog = document.getElementById('doc-batch-progress');
+        if (!prog) return;
+        var startBtn = document.getElementById('doc-batch-btn');
+        var stopBtn = document.getElementById('doc-batch-stop-btn');
+
+        if (d.running) {
+            if (startBtn) startBtn.disabled = true;
+            if (stopBtn) stopBtn.style.display = '';
+            var pct = d.total > 0 ? (d.processed / d.total * 100).toFixed(1) : '0';
+            prog.innerHTML = '<div style="margin-bottom:.4rem"><span class="spinner" style="width:12px;height:12px;border:2px solid #60a5fa;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;display:inline-block;vertical-align:middle"></span> ' +
+                '<span style="vertical-align:middle">Analyzing: ' + d.processed + ' / ' + d.total + ' (' + pct + '%) &mdash; ' + d.message + '</span></div>' +
+                '<div style="height:6px;background:#1e293b;border-radius:9999px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg,#34d399,#a78bfa);transition:width .5s"></div></div>';
+            setTimeout(pollDocBatchStatus, 2000);
+        } else {
+            if (startBtn) startBtn.disabled = false;
+            if (stopBtn) stopBtn.style.display = 'none';
+            prog.innerHTML = '<div style="color:#94a3b8">' + (d.message || 'No document analysis running.') + '</div>';
+            if (d.finished_at) {
+                loadInsights(state.companyId);
+                loadDocumentStatus(state.companyId);
+            }
+        }
+    }).catch(function() {});
+}
+
+var _lastConcallProcessed = -1;
+var _lastConcallReload = 0;
+
+function startConcallBatch(companyId) {
+    var url = '/concalls/batch/start';
+    if (companyId) url += '?company_id=' + companyId;
+    api(url, {method: 'POST'}).then(function(d) {
+        var prog = document.getElementById('cc-batch-progress');
+        if (prog) prog.innerHTML = '<div style="color:#60a5fa">' + (d.message || 'Started') + '</div>';
+        pollConcallBatchStatus();
+    }).catch(function(e) {
+        var prog = document.getElementById('cc-batch-progress');
+        if (prog) prog.innerHTML = '<div style="color:#f87171">Error: ' + e.message + '</div>';
+    });
+}
+
+function stopConcallBatch() {
+    api('/concalls/batch/stop', {method: 'POST'}).then(function() {
+        pollConcallBatchStatus();
+    }).catch(function() {});
+}
+
+function pollConcallBatchStatus() {
+    api('/concalls/batch/status').then(function(d) {
+        var prog = document.getElementById('cc-batch-progress');
+        if (!prog) return;
+        var startBtn = document.getElementById('cc-batch-btn');
+        var stopBtn = document.getElementById('cc-batch-stop-btn');
+
+        if (d.running) {
+            if (startBtn) startBtn.disabled = true;
+            if (stopBtn) stopBtn.style.display = '';
+            prog.innerHTML = '<div style="margin-bottom:.4rem"><span class="spinner" style="width:12px;height:12px;border:2px solid #60a5fa;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;display:inline-block;vertical-align:middle"></span> ' +
+                '<span style="vertical-align:middle">' + (d.message || 'Running...') + '</span></div>' +
+                '<div style="height:6px;background:#1e293b;border-radius:9999px;overflow:hidden"><div style="height:100%;width:' + (d.total > 0 ? Math.min(100, (d.processed / d.total * 100).toFixed(1)) : 5) + '%;background:linear-gradient(90deg,#60a5fa,#a78bfa);transition:width .5s"></div></div>';
+            if (d.done !== _lastConcallProcessed) {
+                _lastConcallProcessed = d.done;
+                var now = Date.now();
+                if (now - _lastConcallReload >= 4000) {
+                    _lastConcallReload = now;
+                    loadDocuments(state.companyId);
+                }
+            }
+            setTimeout(pollConcallBatchStatus, 2000);
+        } else {
+            if (startBtn) startBtn.disabled = false;
+            if (stopBtn) stopBtn.style.display = 'none';
+            prog.innerHTML = '<div style="color:#94a3b8">' + (d.message || 'No concall analysis running.') + '</div>';
+            if (d.finished_at) {
+                _lastConcallProcessed = -1;
+                loadDocuments(state.companyId);
+            }
+        }
+    }).catch(function() {});
 }
 
 // ---------------------------------------------------------------------------
@@ -1223,7 +1424,7 @@ function doPeerSearch(value) {
 }
 
 // ---- Documents section (Screener-style) ----
-var docsState = { tab: 'announcements', annFilter: 'recent', annQuery: '' };
+var docsState = { tab: 'announcements', annFilter: 'recent', annQuery: '', typeFilter: null };
 
 function loadDocuments(companyId) {
     api('/companies/' + companyId + '/documents').then(function(d) {
@@ -1235,6 +1436,88 @@ function loadDocuments(companyId) {
     });
 }
 
+function loadCorporateEvents(companyId) {
+    api('/companies/' + companyId + '/corporate-events').then(function(d) {
+        var el = document.getElementById('corporate-events-content');
+        if (!el) return;
+
+        var ca = d.corporate_actions || [];
+        var bm = d.board_meetings || [];
+        var rc = d.result_calendar || [];
+        var enrichment = d.enrichment || [];
+
+        if (!ca.length && !bm.length && !rc.length) {
+            el.innerHTML = '<div class="muted">No corporate events found.</div>';
+            return;
+        }
+
+        var html = '';
+
+        if (enrichment.length) {
+            html += '<div style="display:flex;flex-wrap:wrap;gap:.3rem;margin-bottom:.6rem">';
+            for (var e = 0; e < enrichment.length; e++) {
+                var en = enrichment[e];
+                var ex = (en.exchange || '').toUpperCase();
+                var badge = en.status === 'done' ? '#34d399' : (en.status === 'running' ? '#fbbf24' : '#f87171');
+                html += '<span style="font-size:.68rem;background:#0f172a;border:1px solid #334155;border-radius:9999px;padding:.15rem .5rem;color:#94a3b8">' +
+                        ex + ' <span style="color:' + badge + '">' + (en.status || '') + '</span>' +
+                        (en.actions_found ? ' · ' + en.actions_found + ' actions' : '') +
+                        (en.board_meetings_found ? ' · ' + en.board_meetings_found + ' bd' : '') +
+                        (en.result_calendar_found ? ' · ' + en.result_calendar_found + ' rc' : '') +
+                        (en.annual_reports_found ? ' · ' + en.annual_reports_found + ' ar' : '') +
+                        '</span>';
+            }
+            html += '</div>';
+        }
+
+        if (ca.length) {
+            html += '<div style="font-weight:600;font-size:.8rem;margin:.4rem 0 .4rem">Corporate Actions</div>';
+            for (var i = 0; i < ca.length; i++) {
+                var a = ca[i];
+                var fam = (a.category || '').replace('Corporate Action - ', '').toLowerCase();
+                var famColor = fam.indexOf('dividend') >= 0 ? '#34d399' :
+                               (fam.indexOf('bonus') >= 0 ? '#a78bfa' :
+                               (fam.indexOf('split') >= 0 ? '#60a5fa' : '#fbbf24'));
+                html += '<div style="display:flex;align-items:center;gap:.5rem;padding:.3rem 0;border-bottom:1px solid #1e293b">';
+                html += '<span style="font-size:.65rem;background:' + famColor + '22;color:' + famColor + ';border:1px solid ' + famColor + '55;border-radius:4px;padding:.1rem .35rem;white-space:nowrap">' + fam.toUpperCase() + '</span>';
+                html += '<span style="font-size:.75rem;flex:1">' + (a.subcategory || a.headline || '') + '</span>';
+                html += '<span style="font-size:.7rem;color:#94a3b8;white-space:nowrap">' + (a.exchange || '') + '</span>';
+                html += '<span style="font-size:.7rem;color:#94a3b8;white-space:nowrap">' + (a.date || '') + '</span>';
+                html += '</div>';
+            }
+        }
+
+        if (bm.length) {
+            html += '<div style="font-weight:600;font-size:.8rem;margin:.6rem 0 .4rem">Board Meetings</div>';
+            for (var j = 0; j < bm.length; j++) {
+                var b = bm[j];
+                html += '<div style="display:flex;align-items:center;gap:.5rem;padding:.3rem 0;border-bottom:1px solid #1e293b">';
+                html += '<span style="font-size:.7rem;color:#60a5fa;white-space:nowrap">' + (b.meeting_date || '') + '</span>';
+                html += '<span style="font-size:.75rem;flex:1">' + (b.purpose || '') + '</span>';
+                html += '<span style="font-size:.7rem;color:#94a3b8;white-space:nowrap">' + (b.exchange || '') + '</span>';
+                html += '</div>';
+            }
+        }
+
+        if (rc.length) {
+            html += '<div style="font-weight:600;font-size:.8rem;margin:.6rem 0 .4rem">Result Calendar</div>';
+            for (var k = 0; k < rc.length; k++) {
+                var r = rc[k];
+                html += '<div style="display:flex;align-items:center;gap:.5rem;padding:.3rem 0;border-bottom:1px solid #1e293b">';
+                html += '<span style="font-size:.7rem;color:#34d399;white-space:nowrap">' + (r.result_date || '') + '</span>';
+                html += '<span style="font-size:.75rem;flex:1">' + (r.event || '') + '</span>';
+                html += '<span style="font-size:.7rem;color:#94a3b8;white-space:nowrap">' + (r.exchange || '') + '</span>';
+                html += '</div>';
+            }
+        }
+
+        el.innerHTML = html;
+    }).catch(function(e) {
+        var el = document.getElementById('corporate-events-content');
+        if (el) el.innerHTML = '<div class="muted">Error loading corporate events: ' + e.message + '</div>';
+    });
+}
+
 function renderDocuments() {
     var el = document.getElementById('docs-container');
     if (!el || !docsState.data) return;
@@ -1243,6 +1526,7 @@ function renderDocuments() {
     var html = '<div style="margin-bottom:.6rem;display:flex;flex-wrap:wrap;gap:.4rem;border-bottom:1px solid #334155;padding-bottom:.5rem">';
     var tabs = [
         { id: 'announcements', label: 'Announcements (' + d.announcements.length + ')' },
+        { id: 'corporate_actions', label: 'Corporate Actions (' + (d.corporate_actions || []).length + ')' },
         { id: 'annual_reports', label: 'Annual reports (' + d.annual_reports.length + ')' },
         { id: 'credit_ratings', label: 'Credit ratings (' + d.credit_ratings.length + ')' },
         { id: 'concalls', label: 'Concalls (' + d.concalls.length + ')' },
@@ -1254,7 +1538,10 @@ function renderDocuments() {
     }
     html += '</div>';
 
+    html += renderTypeChips(d);
+
     if (docsState.tab === 'announcements') html += renderAnnFilterBar(d) + renderAnnList(d.announcements);
+    else if (docsState.tab === 'corporate_actions') html += renderCorporateActions(d.corporate_actions || []);
     else if (docsState.tab === 'annual_reports') html += renderAnnualReports(d.annual_reports);
     else if (docsState.tab === 'credit_ratings') html += renderCreditRatings(d.credit_ratings);
     else if (docsState.tab === 'concalls') html += renderConcalls(d.concalls);
@@ -1262,9 +1549,70 @@ function renderDocuments() {
     el.innerHTML = html;
 }
 
+function renderTypeChips(d) {
+    var tc = d.type_counts || {};
+    var families = [
+        { v: '', l: 'All', n: Object.keys(tc).reduce(function(s, k) { return s + (tc[k] || 0); }, 0) },
+        { v: 'corporate_action', l: 'Corporate Action', n: tc.corporate_action || 0 },
+        { v: 'financial_result', l: 'Financial Result', n: tc.financial_result || 0 },
+        { v: 'board_meeting', l: 'Board Meeting', n: tc.board_meeting || 0 },
+        { v: 'credit_rating', l: 'Credit Rating', n: tc.credit_rating || 0 },
+        { v: 'general', l: 'General', n: tc.general || 0 },
+        { v: 'other', l: 'Other', n: tc.other || 0 },
+    ];
+    var html = '<div style="margin-bottom:.5rem">';
+    html += '<span class="filter-label">Announcement Types</span>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.25rem">';
+    for (var i = 0; i < families.length; i++) {
+        var f = families[i];
+        if (f.v && !f.n) continue;
+        var cls = (docsState.typeFilter || '') === f.v ? 'chip active' : 'chip';
+        html += '<span class="' + cls + '" onclick="setTypeFilter(\'' + f.v + '\')">' + f.l + ' (' + f.n + ')</span>';
+    }
+    html += '</div></div>';
+    return html;
+}
+
+function setTypeFilter(f) {
+    docsState.typeFilter = f || null;
+    if (docsState.tab !== 'announcements') docsState.tab = 'announcements';
+    renderDocuments();
+}
+
+function annFamily(a) {
+    if (a.event_key && a.event_key.indexOf('ca:') === 0) return 'corporate_action';
+    var cat = ((a.category || '') + ' ' + (a.subcategory || '')).toLowerCase();
+    if (cat.indexOf('result') !== -1 || cat.indexOf('financial') !== -1) return 'financial_result';
+    if (cat.indexOf('board') !== -1) return 'board_meeting';
+    if (cat.indexOf('credit') !== -1) return 'credit_rating';
+    if (cat.indexOf('general') !== -1) return 'general';
+    return 'other';
+}
+
+function renderCorporateActions(cas) {
+    if (!cas.length) return '<div class="muted">No corporate actions found</div>';
+    var famColors = { dividend: '#34d399', bonus: '#a78bfa', split: '#60a5fa', buyback: '#fbbf24', delisting: '#f87171', rights: '#f472b6', 'corporate-action': '#94a3b8' };
+    var html = '';
+    for (var i = 0; i < cas.length; i++) {
+        var ca = cas[i];
+        var fam = (ca.family || 'corporate-action').toLowerCase();
+        var col = famColors[fam] || '#94a3b8';
+        html += '<div class="ann-item" style="display:flex;align-items:center;gap:.6rem">';
+        html += '<span style="font-size:.62rem;background:' + col + '22;color:' + col + ';border:1px solid ' + col + '55;border-radius:4px;padding:.15rem .4rem;white-space:nowrap;text-transform:uppercase">' + fam + '</span>';
+        html += '<div style="flex:1;min-width:0">';
+        html += '<div style="font-weight:500;font-size:.8rem">' + (ca.subcategory || ca.headline || 'Corporate Action') + '</div>';
+        if (ca.ai_summary && ca.ai_summary.summary) html += '<div style="font-size:.7rem;color:#c4b5fd;margin-top:.15rem;line-height:1.5">' + ca.ai_summary.summary + '</div>';
+        html += '</div>';
+        html += '<span class="muted" style="font-size:.65rem;white-space:nowrap">' + (ca.exchange || '') + ' · ' + (ca.date || '') + '</span>';
+        html += '</div>';
+    }
+    return html;
+}
+
 function switchDocsTab(tab) {
     docsState.tab = tab;
     renderDocuments();
+    if (tab === 'concalls') pollConcallBatchStatus();
 }
 
 function renderAnnFilterBar(d) {
@@ -1300,6 +1648,10 @@ function setAnnQuery(q) {
 
 function renderAnnList(anns) {
     var list = anns.slice();
+    if (docsState.typeFilter) {
+        var tf = docsState.typeFilter;
+        list = list.filter(function(a) { return annFamily(a) === tf; });
+    }
     if (docsState.annFilter === 'important') {
         list = list.filter(function(a) {
             if (a.importance) return a.importance === 'high';
@@ -1396,16 +1748,31 @@ function renderCreditRatings(crs) {
 function renderConcalls(concalls) {
     if (!concalls.length) return '<div class="muted">No concalls found</div>';
     var html = '';
+
+    html += '<div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.6rem;padding-bottom:.5rem;border-bottom:1px solid #334155">';
+    html += '<button class="btn btn-secondary" id="cc-batch-btn" onclick="startConcallBatch(' + state.companyId + ')">Analyze Concalls</button>';
+    html += '<button class="btn btn-secondary" id="cc-batch-stop-btn" onclick="stopConcallBatch()" style="display:none">Stop</button>';
+    html += '<div id="cc-batch-progress" style="font-size:.7rem;color:#94a3b8">No concall analysis running.</div>';
+    html += '</div>';
+
+    var totalAnalyzed = 0;
+    for (var i = 0; i < concalls.length; i++) {
+        var cc = concalls[i];
+        totalAnalyzed += (cc.analyzed || 0);
+    }
+    if (totalAnalyzed > 0) {
+        html += '<div style="font-size:.68rem;color:#34d399;margin-bottom:.5rem">' + totalAnalyzed + ' concalls summarized with AI</div>';
+    }
+
     for (var i = 0; i < concalls.length; i++) {
         var cc = concalls[i];
         html += '<div class="ann-item">';
         html += '<div style="display:flex;justify-content:space-between;align-items:center">';
         html += '<div style="font-weight:600;font-size:.8rem">' + cc.quarter + '</div>';
-        html += '<span class="muted" style="font-size:.65rem">' + cc.total + ' documents</span>';
+        html += '<span class="muted" style="font-size:.65rem">' + (cc.analyzed || 0) + '/' + cc.total + ' summarized</span>';
         html += '</div>';
         var assets = [
             { key: 'transcript', label: 'Transcript', color: '#60a5fa' },
-            { key: 'ai_summary', label: 'AI Summary', color: '#a78bfa' },
             { key: 'ppt', label: 'PPT', color: '#34d399' },
             { key: 'record', label: 'REC', color: '#fbbf24' },
             { key: 'other', label: 'Other', color: '#94a3b8' },
@@ -1419,19 +1786,48 @@ function renderConcalls(concalls) {
             shown = true;
             for (var k = 0; k < items.length; k++) {
                 var it = items[k];
-                var title = it.ai_summary && it.ai_summary.summary ? it.ai_summary.summary.substring(0, 60) : (it.headline || as.label);
+                var ccInfo = it.concall || {};
+                var title = (ccInfo.status === 'done' && ccInfo.summary)
+                    ? ccInfo.summary.substring(0, 70) : (it.ai_summary && it.ai_summary.summary
+                        ? it.ai_summary.summary.substring(0, 70) : (it.headline || as.label));
                 html += '<span style="display:inline-flex;align-items:center;gap:.3rem;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:.2rem .45rem;font-size:.65rem">';
                 html += '<span style="color:' + as.color + ';font-weight:600">' + as.label + '</span>';
+                if (ccInfo.status === 'done') html += '<span style="color:#34d399" title="Analyzed">&#10003;</span>';
                 html += '<span class="muted">' + title + '</span>';
                 if (it.attachment_url) {
-                    html += '<a href="' + it.attachment_url + '" target="_blank" rel="noopener" style="color:#60a5fa;text-decoration:none">↗</a>';
+                    html += '<a href="' + it.attachment_url + '" target="_blank" rel="noopener" style="color:#60a5fa;text-decoration:none">\u2197</a>';
                 }
                 html += '</span>';
+                if (ccInfo.status === 'done' && (ccInfo.summary || ccInfo.guidance || ccInfo.management_views || ccInfo.qna_summary)) {
+                    html += renderConcallSummary(it);
+                }
             }
         }
         if (!shown) html += '<span class="muted" style="font-size:.65rem">No assets</span>';
         html += '</div></div>';
     }
+    return html;
+}
+
+function renderConcallSummary(it) {
+    var cc = it.concall || {};
+    var html = '<details style="margin:.35rem 0 .6rem;background:#0f172a;border:1px solid #1e293b;border-radius:6px;padding:.4rem .6rem">';
+    html += '<summary style="cursor:pointer;font-size:.7rem;font-weight:600;color:#a78bfa">AI Summary'
+        + (cc.sentiment ? ' &mdash; <span style="color:' + (cc.sentiment === 'positive' ? '#34d399' : cc.sentiment === 'negative' ? '#f87171' : '#60a5fa') + '">' + cc.sentiment.toUpperCase() + '</span>' : '')
+        + '</summary>';
+    html += '<div style="font-size:.7rem;color:#cbd5e1;line-height:1.55;margin-top:.35rem">';
+    if (cc.summary) html += '<div>' + cc.summary + '</div>';
+    if (cc.guidance) html += '<div style="margin-top:.4rem"><span style="color:#f59e0b;font-weight:600">Guidance: </span>' + cc.guidance + '</div>';
+    if (cc.management_views) html += '<div style="margin-top:.4rem"><span style="color:#34d399;font-weight:600">Management views: </span>' + cc.management_views + '</div>';
+    if (cc.qna_summary) html += '<div style="margin-top:.4rem"><span style="color:#60a5fa;font-weight:600">Q&amp;A: </span>' + cc.qna_summary + '</div>';
+    if (cc.key_topics && cc.key_topics.length) {
+        html += '<div style="margin-top:.4rem;display:flex;gap:.3rem;flex-wrap:wrap">';
+        for (var i = 0; i < cc.key_topics.length; i++) {
+            html += '<span class="sector-badge" style="font-size:.6rem">' + cc.key_topics[i] + '</span>';
+        }
+        html += '</div>';
+    }
+    html += '</div></details>';
     return html;
 }
 

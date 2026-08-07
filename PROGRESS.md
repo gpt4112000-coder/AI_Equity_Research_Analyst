@@ -1,9 +1,9 @@
 # AI Equity Research Analyst - Progress Log
 
-**Last Updated:** 2026-08-02 19:40 IST
-**Current Version:** v4.4.0 (AI Batch Analysis + AI Insights Timeline)
+**Last Updated:** 2026-08-07 18:20 IST
+**Current Version:** v4.5.0 (Per-Company Concall Transcript Summaries)
 **GitHub:** https://github.com/gpt4112000-coder/AI_Equity_Research_Analyst
-**Latest Commit:** bf28436
+**Latest Commit:** d0b53fb (uncommitted concall work on top)
 
 ---
 
@@ -95,8 +95,10 @@ Frontend (index.html, fetch.html, plain JS) → FastAPI (app.py) → SQLite DB
 - **Speed:** ~6s per request on CPU
 - **Endpoints:**
   - `POST /api/announcements/{id}/ai_summary` - per-announcement structured summary
-  - `POST /api/companies/{id}/generate_summaries` - batch process all announcements
   - `GET /api/companies/{id}/ai_summary` - company-level synthesized report
+  - `POST /api/ai/batch/start|stop`, `GET /api/ai/batch/status` - background announcement analysis
+  - `POST /api/documents/batch/start|stop`, `GET /api/documents/batch/status` - background document analysis
+  - `GET /api/companies/{id}/insights?source=all|announcement|document&metric=` - unified insights timeline
 
 ### Step 7: Fetch Stock Feature (NEW - 2026-07-29)
 - **Script:** `scripts/fetch_stock_announcements.py`
@@ -138,6 +140,38 @@ Frontend (index.html, fetch.html, plain JS) → FastAPI (app.py) → SQLite DB
   - `min_amount=1000` → 29 companies
   - Combined filters working correctly
 
+### Step 9: Corporate Event Enrichment (NEW - 2026-08-07)
+- **Repos evaluated:** `nse-bse-mcp` (TypeScript MCP passthrough to npm `nse-bse-api`, JS port of our Python libs, no new data source) — skipped, reused `BseIndiaApi`/`NseIndiaApi` directly.
+- **Script:** `scripts/backfill_corporate.py` (A2) — runs in tmux `enrich`, logs to `logs/enrich_corporate.log`
+- **Data added per company:**
+  - Corporate actions (dividend/bonus/split/buyback/delisting) → mirrored into `announcements` with `subcategory` (purpose) + `event_key`, `announcement_date` = ex-date, so the existing AI pipeline analyzes each event **exactly once** (dedup gate: same `event_key`, or an existing announcement same-date/same-family).
+  - Board meetings (NSE) → `board_meetings` table
+  - Result calendar (BSE) → `result_calendar` table
+  - Annual reports (NSE) → `company_files` (kind=`annual_report`), links recorded; PDF downloads optional (`--no-download` off)
+- **Tracking:** `enrich_status` table (per company+exchange), resumable with `--resume`.
+- **Schema (A1):** `announcements.subcategory`/`event_key` columns; new `board_meetings`, `result_calendar`, `enrich_status` tables.
+- **Parse upgrade (A3):** `parse_bse`/`parse_nse` set `category`/`subcategory` from `CATEGORYNAME`/`SUBCATNAME`.
+- **Documents classifier (A4):** `_classify_announcement` in `backend/app.py` now prefers structured `category`/`subcategory`/`event_key` (regex fallback only for legacy rows) for annual-report / credit-rating / concall buckets.
+- **Corporate Events endpoint + UI (A5):**
+  - `GET /api/companies/{id}/corporate-events` — corporate actions (event_key mirrors), board meetings, result calendar, enrichment status.
+  - Frontend "Corporate Events" card in `renderCompany` (badges for each exchange + event rows).
+- **MCP server (A6):** `backend/mcp_nse_bse_server.py` (official `mcp` SDK 1.14, FastMCP) — 10 tools: `search_companies`, `db_corporate_events`, `db_insights`, `nse_announcements`, `bse_announcements`, `nse_corporate_actions`, `bse_corporate_actions`, `nse_board_meetings`, `nse_annual_reports`, `bse_result_calendar`. Registered in `opencode.json` as local stdio server (conda python). Verified: handshake + tools/list + live tool call.
+- **Usage:** `python scripts/backfill_corporate.py [--company N] [--exchanges both|bse|nse] [--resume] [--no-download] [--limit N]`
+
+### Step 10: Frontend Event Visibility + Refresh Persistence (NEW - 2026-08-07)
+- **Backend additions:**
+  - `/api/companies`: added `ca_count` + `latest_ca_date` per company (LEFT JOIN on `event_key` announcements), `corporate_actions=1` filter, `ca_latest` sort.
+  - `/api/companies/{id}/documents`: added `corporate_actions` (full list, not just top-200) + `type_counts` (category-family breakdown).
+  - `/api/companies/{id}/corporate-events`: added `type_counts`.
+- **Frontend additions (`frontend/index.html`):**
+  - **Refresh persistence:** `syncUrl()` writes current view/filters to the URL via `history.pushState` (guard prevents duplicate entries on `popstate`); `restoreState()` reads **all** params on load (was only `?company=`); `popstate` listener re-renders on Back/Forward. Refreshing now stays on the current page.
+  - **Documents card:** new "Corporate Actions" tab with family color badges (Dividend/Bonus/Split/Buyback/Delisting); "Announcement Types" chip bar (full-DB counts) with click-to-filter of the Announcements tab.
+  - **Companies list:** "N CA" badge on rows, "Corporate Actions: Has Actions" filter chip, "Latest Corp. Action" sort option.
+- **Verified:** backend compile + endpoint checks, `node --check`, headless Chrome render of company page (enrichment badges, CA rows, board meetings, type chips) and filtered companies list.
+- **AI Insights Timeline redundancy removal (2026-08-07):**
+  - Consolidated all batch-analysis controls (Generate Summary / Analyze Announcements / Analyze All Companies / Analyze Documents + per-job Stop + progress) into the **AI Research Summary** card only; the **AI Insights Timeline** card is now a pure display (source toggle + metric chips + insight rows).
+  - `/api/companies/{id}/insights`: dedup by `(date, metric, headline)` preferring announcement source (announcement rows deduped first, before sort). Verified company 516 `source=all`: 33 → 30 rows, zero duplicates; the two `2026-08-02` financials rows are distinct filings (results + board-meeting outcome) and are correctly kept; `date=None` document pile reduced 22 → 19.
+
 ---
 
 ## Key Fixes Applied
@@ -162,10 +196,15 @@ Frontend (index.html, fetch.html, plain JS) → FastAPI (app.py) → SQLite DB
 | GET | `/api/stats` | Dashboard statistics |
 | GET | `/api/sectors` | List of sectors with counts |
 | GET | `/api/companies` | Company list with filters (now supports 14 parameters) |
-| GET | `/api/companies/{id}` | Company detail + stored AI summary |
+| GET | `/api/companies/{id}` | Company detail + stored AI summary + analysis status |
 | GET | `/api/companies/{id}/ai_summary` | Generate & store company-level AI summary |
-| POST | `/api/companies/{id}/generate_summaries` | Batch generate per-announcement summaries |
 | POST | `/api/announcements/{id}/ai_summary` | Generate per-announcement AI summary |
+| POST | `/api/ai/batch/start?company_id=` / `/stop` | Background announcement AI analysis |
+| GET | `/api/ai/batch/status` | Announcement batch progress |
+| POST | `/api/documents/batch/start?company_id=` / `/stop` | Background document AI analysis |
+| GET | `/api/documents/batch/status` | Document batch progress |
+| GET | `/api/companies/{id}/insights` | Unified insights timeline (`source`, `metric` params) |
+| GET | `/api/companies/{id}/documents/status` | Downloaded/analyzed document counts |
 | GET | `/api/fetch?symbol=X&years=N` | Fetch announcements from exchange |
 | GET | `/api/fetched-stocks` | List previously fetched stocks |
 | GET | `/api/search-stock?q=X` | Search companies by name/symbol |
@@ -456,5 +495,56 @@ git reset --hard <commit-hash>
 ### Ready for Next Session
 - Changes uncommitted — commit + push to GitHub
 - Optionally trigger the full "Analyze All Companies" batch from the webpage (many hours)
+
+---
+
+## Session Summary (2026-08-07) — Per-Company Concall Transcript Summaries
+
+### Problem
+- Earnings-call transcripts (~5,800 PDFs across 513 companies) were downloaded as plain documents but never summarized; no web-triggered way to AI-analyze a company's concalls and view the results.
+
+### Work Completed
+1. **Shared concall pipeline** (`backend/concall_pipeline.py`)
+   - `concalls` table (`company_id`, `announcement_id` UNIQUE, `call_date`, `quarter`, `title`, `transcript_path`, summary fields, `status` pending→downloaded→done|error, `analyzed_at`)
+   - `TRANSCRIPT_LIKE` SQL predicate (concall/transcript/earnings-call categories) + `recent_cutoff(years=2)` scope
+   - `ensure_queued` (INSERT OR IGNORE), `download_pending` (BSE AttachLive/AttachHis alt URL fallback), `analyze_downloaded` — shared by CLI scripts and the backend batch job
+   - AI prompts: `SINGLE_PROMPT` / `DIGEST_PROMPT` (chunk ~45k, cap 50k chars, 80 pages) + `MERGE_PROMPT` → JSON `{summary, guidance, management_views, qna_summary, key_topics, key_numbers, sentiment, importance}`
+   - **Resume-by-design**: transient LLM failures return status `retry` → row stays `downloaded` and is re-tried next run; only real errors (missing file, no extractable text) → `error`
+   - Downloads verified: `_upsert_company_file` (7-placeholder INSERT) and the "file already on disk → mark downloaded" branch both fixed during smoke testing
+
+2. **LLM backend abstraction** (`backend/llm.py`)
+   - `generate(system, user, max_tokens, retries)` picks backend by `CONCALL_LLM_BACKEND` (default `opencode` → OpenAI-compatible Zen API `https://opencode.ai/zen/v1/chat/completions`, model `deepseek-v4-flash-free`; `ollama` fallback for local qwen2.5:3b)
+   - Zen key loaded from `OPENCODE_API_KEY` env or `~/.local/share/opencode/auth.json`; **never logged**
+   - Verified live: 200 OK, returns JSON as requested
+
+3. **CLI + daily hooks**
+   - `scripts/fetch_concall_transcripts.py` (`--company/--years/--companies/--limit/--dry-run`), `scripts/analyze_concalls.py` (`--company/--companies/--limit`)
+   - `scripts/daily_pipeline.py` `_schedule_concall_processing(date_str)` background thread: queue → download → analyze transcripts announced on the run date (2y cutoff)
+
+4. **Backend batch job + API**
+   - `POST /api/concalls/batch/start?company_id=` (daemon thread), `GET /api/concalls/batch/status`, `POST /api/concalls/batch/stop`
+   - Live progress: `on_progress` callback updates `done`/`processed` per analyzed row (not just per-company)
+   - `GET /api/companies/{id}/concalls` — stored summaries
+   - `company_documents` concall section joins per-announcement summaries + per-quarter `analyzed` counts
+   - Removed a leaked `conn.close()` in `company_documents` that caused a 500 (`sqlite3.ProgrammingError`)
+
+5. **Frontend** (`frontend/index.html`)
+   - Concalls tab: toolbar with **Analyze Concalls** / Stop + live progress, per-quarter "N/M summarized", per-asset ✓ when done
+   - Collapsible **AI Summary** `<details>` per transcript: summary, guidance, management views, Q&A highlights, key-topic chips, sentiment badge
+   - "X concalls summarized with AI" total line; `startConcallBatch`/`stopConcallBatch`/`pollConcallBatchStatus` with throttled live reload of `loadDocuments` while running
+
+### Files Modified / Added
+- `backend/concall_pipeline.py` (new), `backend/llm.py` (new), `backend/data/storage/db.py` (concalls table), `backend/app.py` (batch job + endpoints), `scripts/fetch_concall_transcripts.py` (new), `scripts/analyze_concalls.py` (new), `scripts/daily_pipeline.py`, `frontend/index.html`
+
+### Test Results
+- Pilot company 681 (Shemaroo): 73 transcript announcements in window; 4 analyzed via CLI with parsed JSON stored (summary/guidance/management_views/qna_summary/key_topics/sentiment/importance)
+- Full batch for 681 running end-to-end: queued all, downloaded 65, analyzing all; DB checkpoints each row so it's resumable
+- Frontend verified via headless Chrome CDP: Concalls tab renders Analyze/Stop buttons, "23 concalls summarized with AI", per-quarter "7/16 summarized", AI Summary details with sentiment/Guidance/Q&A
+- Endpoints: `/api/concalls/batch/status` (idle + running), `/api/companies/681/concalls`, `/api/companies/681/documents` all 200
+
+### Ready for Next Session
+- Changes uncommitted — commit + push to GitHub
+- Let the 681 batch finish, then optionally kick off the recent backfill (5,160 PDFs last-2y / 437 companies) as a resumable tmux job
+- Update PROGRESS.md Step numbering if needed
 
 

@@ -58,9 +58,12 @@ def match_company(raw, exchange, nse_map, bse_map, name_map):
 
 def parse_bse(raw):
     dt = raw.get("DT_TM", "")
+    subcat = raw.get("SUBCATNAME", "") or ""
+    cat = raw.get("CATEGORYNAME") or subcat
     return {
         "exchange": "BSE",
-        "category": raw.get("SUBCATNAME", ""),
+        "category": cat,
+        "subcategory": subcat,
         "headline": raw.get("NEWSSUB", ""),
         "description": raw.get("HEADLINE", ""),
         "announcement_date": dt[:10] if dt else "",
@@ -76,6 +79,7 @@ def parse_nse(raw):
     return {
         "exchange": "NSE",
         "category": raw.get("desc", ""),
+        "subcategory": "",
         "headline": raw.get("attchmntText") or raw.get("desc", ""),
         "description": raw.get("attchmntText", ""),
         "announcement_date": sort_date[:10] if sort_date else "",

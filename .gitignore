@@ -47,3 +47,6 @@ nohup.out
 *.db-shm
 *.db-wal
 *.db-journal
+
+# Downloaded company attachments (large binaries)
+backend/data/company_files/
